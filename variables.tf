@@ -25,7 +25,12 @@ variable "scalr_vcs_provider_id" {
   type = string
 }
 
-variable "lock_tfc_workspace" {
+variable "lock_tf_workspace" {
   type = bool
-  default = false
+  default = true
+}
+
+variable "ignore_organizations" {
+  type = list(string)
+  default = []
 }

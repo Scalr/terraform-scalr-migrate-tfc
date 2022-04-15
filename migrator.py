@@ -53,13 +53,20 @@ def cli():
     help="VCS identifier",
 )
 @click.option(
+    "-i",
+    "--ignore-organizations",
+    type=str,
+    multiple=False,
+    help="VCS identifier",
+)
+@click.option(
     "-l",
     "--lock",
     is_flag=True,
     multiple=False,
     help="Whether to lock TFE workspace",
 )
-def migrate(scalr_hostname, scalr_token, tf_hostname, tf_token, account_id, vcs_id, lock):
+def migrate(scalr_hostname, scalr_token, tf_hostname, tf_token, account_id, vcs_id, ignore_organizations, lock):
     def fetch_tfc(route, filters=None):
         if filters:
             filters = f"?{urlencode(filters)}"
@@ -77,7 +84,7 @@ def migrate(scalr_hostname, scalr_token, tf_hostname, tf_token, account_id, vcs_
             data=json.dumps(data)
         )
 
-        if response.status_code != 201:
+        if response.status_code not in [201]:
             print(data)
             print(response.json()["errors"][0])
             sys.exit(1)
@@ -170,7 +177,7 @@ def migrate(scalr_hostname, scalr_token, tf_hostname, tf_token, account_id, vcs_
         decoded = binascii.a2b_base64(encoded_state)
         data = {
           "data": {
-            "type":"state-versions",
+            "type": "state-versions",
             "attributes": {
               "serial": attributes["serial"],
               "md5": hashlib.md5(decoded).hexdigest(),
@@ -262,21 +269,29 @@ def migrate(scalr_hostname, scalr_token, tf_hostname, tf_token, account_id, vcs_
                     )
 
             run = fetch_tfc(f"workspaces/{tf_workspace['id']}/runs", {"page[size]": 1})["data"]
+            if not run:
+                return
 
-            if run:
-                plan = fetch_tfc(f"runs/{run[0]['id']}/plan/json-output")
-                variables = plan["variables"]
-                configuration_variables = plan["configuration"]["root_module"]["variables"]
-                for var in configuration_variables:
-                    if "sensitive" in configuration_variables[var]:
-                        create_variable(
-                            var,
-                            variables[var]["value"],
-                            "terraform",
-                            True,
-                            None,
-                            relationships
-                        )
+            plan = fetch_tfc(f"runs/{run[0]['id']}/plan/json-output")
+            if "variables" not in plan:
+                return
+
+            variables = plan["variables"]
+            root_module = plan["configuration"]["root_module"]
+
+            configuration_variables = root_module["variables"] if "variables" in root_module else []
+
+            for var in configuration_variables:
+                if "sensitive" not in configuration_variables[var]:
+                    continue
+                create_variable(
+                    var,
+                    variables[var]["value"],
+                    "terraform",
+                    True,
+                    None,
+                    relationships
+                )
 
         next_page = 1
         while True:
@@ -315,8 +330,14 @@ def migrate(scalr_hostname, scalr_token, tf_hostname, tf_token, account_id, vcs_
     create_variable("TFE_TOKEN", tf_token, "shell", True, "Created by migrator", account_relationships)
     print("Initializing backend secrets... Done")
 
+    ignore_organizations = ignore_organizations.split(',')
     for organization in fetch_tfc("organizations")["data"]:
         organization_name = organization["attributes"]["name"]
+
+        if organization_name in ignore_organizations:
+            print(f"Skipping ignored organization {organization_name}.")
+            continue
+
         print(f"Migrating organization {organization_name}...")
         env = create_environment(
             organization_name,

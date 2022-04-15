@@ -9,7 +9,7 @@ resource "null_resource" "install-requirements" {
 }
 
 locals {
-  lock_tfc_workspace = var.lock_tfc_workspace == true ? "--lock" : ""
+  lock_tfc_workspace = var.lock_tf_workspace == true ? "--lock" : ""
 }
 
 resource "null_resource" "migrate" {
@@ -21,6 +21,7 @@ resource "null_resource" "migrate" {
     --scalr-token=${var.scalr_token} \
     -a ${var.scalr_account_id} \
     -v ${var.scalr_vcs_provider_id} \
+    -i ${join(",", var.ignore_organizations)} \
     ${local.lock_tfc_workspace}
     EOF
   }
