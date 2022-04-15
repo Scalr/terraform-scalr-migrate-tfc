@@ -20,6 +20,9 @@ What Terraform Cloud/Enterprise entities will be migrated:
 Usage
 -----
 
+* Create the empty project with `main.tf` file in it. 
+* Then copy and paste the following source code and fill in the required inputs: 
+
 ```hcl
 module "migrator" {
   source = "github.com/emocharnik/terraform-migrate-tfc-scalr"
@@ -40,4 +43,6 @@ module "migrator" {
 }
 ```
 
-**Note** that after the migration is done you still have to configure sensitive shell variables or [provider credentials](https://docs.scalr.com/en/latest/cloud_credentials.html) in order to authorize your pipelines.
+* Run `terraform init` and then `terraform apply`
+* After the migration is done you still have to configure sensitive shell variables or [provider credentials](https://docs.scalr.com/en/latest/cloud_credentials.html) in order to authorize your pipelines.
+* After the secrets configuration is done - trigger the run to double-check workspaces work as expected and generate no changes.
