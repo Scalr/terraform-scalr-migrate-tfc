@@ -39,3 +39,5 @@ module "migrator" {
   ignore_organizations = []
 }
 ```
+
+**Note** that after the migration is done you still have to configure sensitive shell variables or [provider credentials](https://docs.scalr.com/en/latest/cloud_credentials.html) in order to authorize your pipelines.
