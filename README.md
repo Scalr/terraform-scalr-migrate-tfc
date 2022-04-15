@@ -1,26 +1,26 @@
 Migration TFC/E to Scalr
 ========================
 
-This module helps Terraform Cloud/Enterprise users to migrate their workspaces to [Scalr](https://scalr.com) remote backend.
+This module helps Terraform Cloud/Enterprise users migrate their workspaces to [Scalr](https://scalr.com) remote backend.
 
-Prior to the migration user has to:
+Prior to the migration, please do the following:
 
-* obtain a TFC/E access token. It can be done in two ways: [manually](https://app.terraform.io/app/settings/tokens) or via [terraform login](https://www.terraform.io/cli/commands/login).
-* obtain a Scalr access token. It can be done in two ways: [manually](https://scalr.io/app/settings/tokens) or via [terraform login account-name.scalr.io](https://www.terraform.io/cli/commands/login).
-* Register a [VCS provider](https://docs.scalr.com/en/latest/vcs_providers.html) in Scalr. Note that the registered provider must have the access to all repositories connected to the TFC/E workspaces. After the provider is created, the user has to copy a VCS provider id.
-* Obtain the Scalr account identifier. It could be taken from the account dashboard.
+* Obtain a TFC/E access token. This can be done in two ways: [manually](https://app.terraform.io/app/settings/tokens) or via [terraform login](https://www.terraform.io/cli/commands/login).
+* Obtain a Scalr access token. This can be done in two ways: [manually](https://scalr.io/app/settings/tokens) or via [terraform login account-name.scalr.io](https://www.terraform.io/cli/commands/login).
+* Register a [VCS provider](https://docs.scalr.com/en/latest/vcs_providers.html) in Scalr. Note that the registered provider must have the access to all repositories connected to the TFC/E workspaces. After the provider is created, copy the VCS provider id.
+* Obtain the Scalr account identifier. It can be found on the account dashboard.
 
-What Terraform Cloud/Enterprise entities will be migrated:
+What Terraform Cloud/Enterprise objects will be migrated:
 
-* organizations - will be migrated into the [Scalr environments](https://docs.scalr.com/en/latest/hierarchy.html#environments)
-* workspaces - will be migrated into the [Scalr workspaces](https://docs.scalr.com/en/latest/workspaces.html). VCS workspaces are migrated only. CLI-driven workspaces have to be [migrated manually](https://docs.scalr.com/en/latest/migration.html).  
-* workspace variables - all Terraform and non-sensitive Environment variables will be created as Terraform and Shell variables in Scalr.
-* State files - The current state file of a workspace will be taken and pushed into the Scalr state storage.
+* Organizations - Will be migrated into [Scalr environments](https://docs.scalr.com/en/latest/hierarchy.html#environments)
+* Workspaces - Will be migrated into [Scalr workspaces](https://docs.scalr.com/en/latest/workspaces.html). Only VCS based workspaces will be migrated. CLI-driven workspaces have to be [migrated manually](https://docs.scalr.com/en/latest/migration.html).  
+* Workspace variables - Terraform and non-sensitive environment variables will be created as Terraform and shell variables in Scalr.
+* State files - The current state file of a workspace will be migrated to Scalr state storage.
 
 Usage
 -----
 
-* Create the empty project with `main.tf` file in it. 
+* Assuming you will use the Terraform CLI, create a main.tf locally.
 * Then copy and paste the following source code and fill in the required inputs: 
 
 ```hcl
