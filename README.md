@@ -25,7 +25,7 @@ Usage
 
 ```hcl
 module "migrator" {
-  source = "github.com/emocharnik/terraform-migrate-tfc-scalr"
+  source = "github.com/Scalr/terraform-migrate-tfc-scalr"
   
   # required inputs
   tf_token = "<tfc-token>"
