@@ -4,7 +4,7 @@ resource "null_resource" "install-requirements" {
   }
 
   provisioner "local-exec" {
-    command = "bash ${path.root}/install.sh"
+    command = "bash ${path.module}/install.sh"
   }
 }
 
@@ -15,7 +15,7 @@ locals {
 resource "null_resource" "migrate" {
   provisioner "local-exec" {
     command = <<EOF
-    python3 ${path.root}/migrator.py migrate --tf-hostname=${var.tf_hostname} \
+    python3 ${path.module}/migrator.py migrate --tf-hostname=${var.tf_hostname} \
     --tf-token=${var.tf_token} \
     --scalr-hostname=${var.scalr_hostname} \
     --scalr-token=${var.scalr_token} \
