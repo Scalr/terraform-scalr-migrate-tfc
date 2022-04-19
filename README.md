@@ -29,17 +29,22 @@ module "migrator" {
   
   # required inputs
   tf_token = "<tfc-token>"
+  tf_organization = "<tf-organization-name>"
+
   scalr_account_id = "<scalr-account-id>"
   scalr_hostname = "<scalr-hostname>"
   scalr_token = "<scalr-token>"
   scalr_vcs_provider_id = "<scalr-vcs-id>"
   
   # optional inputs
+  # by default, it takes the TFC/E organization name to name a Scalr environment after. 
+  # But users could set a custom environment name
+  scalr_environment = "<tf-environment-name>" 
+  # by default, the tool migrates all Terraform Cloud/Enterprise workspaces, but the user can control 
+  # which workspaces do not migrate into Scalr, e.g. workspace that manages other Terraform Cloud workspaces
+  workspaces = ["*"]
   # by default, the tool locks Terraform Cloud/Enterprise workspaces in order to keep a single source of state
   lock_tf_workspace = true
-  # by default, the tool migrates all Terraform Cloud/Enterprise organizations, but the user can control 
-  # which organizations do not migrate into Scalr, e.g. organization that manages other Terraform Cloud organizations
-  ignore_organizations = []
 }
 ```
 

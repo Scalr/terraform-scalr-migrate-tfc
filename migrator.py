@@ -27,16 +27,29 @@ def cli():
     help="Scalr hostname",
 )
 @click.option(
+    "--scalr-environment",
+    type=str,
+    multiple=False,
+    required=False,
+    help="Optional. Scalr environment to create. By default it takes TFC/E organization name.",
+)
+@click.option(
     "--tf-hostname",
     type=str,
     multiple=False,
-    help="Scalr hostname",
+    help="TFC/E hostname",
 )
 @click.option(
     "--tf-token",
     type=str,
     multiple=False,
-    help="Scalr hostname",
+    help="TFC/E token",
+)
+@click.option(
+    "--tf-organization",
+    type=str,
+    multiple=False,
+    help="TFC/E organization name",
 )
 @click.option(
     "-a",
@@ -53,11 +66,11 @@ def cli():
     help="VCS identifier",
 )
 @click.option(
-    "-i",
-    "--ignore-organizations",
+    "-w",
+    "--workspaces",
     type=str,
     multiple=False,
-    help="VCS identifier",
+    help="Workspaces to migrate. By default - all",
 )
 @click.option(
     "-l",
@@ -66,26 +79,31 @@ def cli():
     multiple=False,
     help="Whether to lock TFE workspace",
 )
-def migrate(scalr_hostname, scalr_token, tf_hostname, tf_token, account_id, vcs_id, ignore_organizations, lock):
-    def fetch_tfc(route, filters=None):
+def migrate(
+    scalr_hostname,
+    scalr_token,
+    scalr_environment,
+    tf_hostname,
+    tf_token,
+    tf_organization,
+    account_id,
+    vcs_id,
+    workspaces,
+    lock
+):
+    def encode_filters(filters):
+        encoded = ''
         if filters:
-            filters = f"?{urlencode(filters)}"
-        url = f"https://{tf_hostname}/api/v2/{route}{filters if filters else ''}"
-        return requests.get(url, headers={"Authorization": f"Bearer {tf_token}"}).json()
+            encoded = f"?{urlencode(filters)}"
+        return encoded
 
-    def write_scalr(route, data):
-        response = requests.post(
-            f"https://{scalr_hostname}/api/iacp/v3/{route}",
-            headers={
-                "Authorization": f"Bearer {scalr_token}",
-                "Prefer": "profile=preview",
-                "Content-Type": "application/vnd.api+json"
-            },
-            data=json.dumps(data)
+    def fetch_tfc(route, filters=None):
+        response = requests.get(
+            f"https://{tf_hostname}/api/v2/{route}{encode_filters(filters)}",
+            headers={"Authorization": f"Bearer {tf_token}"}
         )
 
-        if response.status_code not in [201]:
-            print(data)
+        if response.status_code not in [200]:
             print(response.json()["errors"][0])
             sys.exit(1)
         return response.json()
@@ -106,12 +124,40 @@ def migrate(scalr_hostname, scalr_token, tf_hostname, tf_token, account_id, vcs_
             sys.exit(1)
         return response.json()
 
-    def create_environment(name: str, cost_enabled: bool):
+    def fetch_scalr(route, filters=None):
+        response = requests.get(
+            f"https://{scalr_hostname}/api/iacp/v3/{route}{encode_filters(filters)}",
+            headers={"Authorization": f"Bearer {scalr_token}", "Prefer": "profile=preview"}
+        )
+
+        if response.status_code not in [200]:
+            print(response.json()["errors"][0])
+            sys.exit(1)
+        return response.json()
+
+    def write_scalr(route, data):
+        response = requests.post(
+            f"https://{scalr_hostname}/api/iacp/v3/{route}",
+            headers={
+                "Authorization": f"Bearer {scalr_token}",
+                "Prefer": "profile=preview",
+                "Content-Type": "application/vnd.api+json"
+            },
+            data=json.dumps(data)
+        )
+
+        if response.status_code not in [201]:
+            print(data)
+            print(response.json()["errors"][0])
+            sys.exit(1)
+        return response.json()
+
+    def create_environment(cost_enabled: bool):
         data = {
           "data": {
             "type": "environments",
             "attributes": {
-              "name": name,
+              "name": scalr_environment,
               "cost-estimation-enabled": cost_enabled
             },
             "relationships": {
@@ -129,29 +175,20 @@ def migrate(scalr_hostname, scalr_token, tf_hostname, tf_token, account_id, vcs_
 
     def create_workspace(tf_workspace):
         attributes = tf_workspace["attributes"]
-        vcs_repo = None
         relationships = {
             "environment": {
                 "data": {
                     "type": "environments",
-                    "id": env["data"]["id"]
+                    "id": env["id"]
                 }
-            }
-        }
-        if attributes["vcs-repo"]:
-            branch = attributes["vcs-repo"]["branch"] if attributes["vcs-repo"]["branch"] else None
-            vcs_repo = {
-                "identifier": attributes["vcs-repo"]["identifier"],
-                "branch":  branch,
-                "dry-runs-enabled": attributes["speculative-enabled"],
-                "trigger-prefixes": attributes["trigger-prefixes"]
-            }
-            relationships["vcs-provider"] = {
+            },
+            "vcs-provider": {
                 "data": {
                     "type": "vcs-providers",
                     "id": vcs_id
                 }
             }
+        }
 
         data = {
             "data": {
@@ -161,7 +198,12 @@ def migrate(scalr_hostname, scalr_token, tf_hostname, tf_token, account_id, vcs_
                     "auto-apply": attributes["auto-apply"],
                     "operations": attributes["operations"],
                     "terraform-version": attributes["terraform-version"],
-                    "vcs-repo": vcs_repo,
+                    "vcs-repo": {
+                        "identifier": attributes["vcs-repo"]["identifier"],
+                        "branch":  attributes["vcs-repo"]["branch"] if attributes["vcs-repo"]["branch"] else None,
+                        "dry-runs-enabled": attributes["speculative-enabled"],
+                        "trigger-prefixes": attributes["trigger-prefixes"]
+                    },
                     "working-directory": attributes["working-directory"]
                 },
                 "relationships": relationships
@@ -204,12 +246,12 @@ def migrate(scalr_hostname, scalr_token, tf_hostname, tf_token, account_id, vcs_
 
         return response.json()
 
-    def create_variable(key, value, category, sensitive, description=None, relationships=None):
+    def create_variable(variable_key, value, category, sensitive, description=None, relationships=None):
         data = {
             "data": {
                 "type": "vars",
                 "attributes": {
-                    "key": key,
+                    "key": variable_key,
                     "value": value,
                     "category": category,
                     "sensitive": sensitive,
@@ -230,8 +272,7 @@ def migrate(scalr_hostname, scalr_token, tf_hostname, tf_token, account_id, vcs_
         def migrate_state():
             state_filters = {
                 "filter[workspace][name]": workspace_name,
-
-                "filter[organization][name]": organization_name,
+                "filter[organization][name]": tf_organization,
                 "page[size]": 1
             }
             print("Migrating state...")
@@ -252,7 +293,7 @@ def migrate(scalr_hostname, scalr_token, tf_hostname, tf_token, account_id, vcs_
 
             vars_filters = {
                 "filter[workspace][name]": workspace_name,
-                "filter[organization][name]": organization_name,
+                "filter[organization][name]": tf_organization,
             }
 
             for api_var in fetch_tfc("vars", vars_filters)["data"]:
@@ -300,11 +341,23 @@ def migrate(scalr_hostname, scalr_token, tf_hostname, tf_token, account_id, vcs_
                 "page[number]": next_page,
             }
 
-            workspaces = fetch_tfc(f"organizations/{organization_name}/workspaces", workspace_filters)
-            next_page = workspaces["meta"]["pagination"]["next-page"]
+            tfc_workspaces = fetch_tfc(f"organizations/{tf_organization}/workspaces", workspace_filters)
+            next_page = tfc_workspaces["meta"]["pagination"]["next-page"]
 
-            for tf_workspace in workspaces["data"]:
+            for tf_workspace in tfc_workspaces["data"]:
                 workspace_name = tf_workspace["attributes"]["name"]
+                if workspace_name not in workspaces and "*" not in workspaces:
+                    continue
+
+                if fetch_scalr(
+                    "workspaces",
+                    {"filter[name]": workspace_name, "filter[environment]": env["id"]}
+                )["data"]:
+                    continue
+
+                if not tf_workspace["attributes"]["vcs-repo"]:
+                    continue
+
                 print(f"Migrating workspace {workspace_name}...")
                 workspace = create_workspace(tf_workspace)
                 migrate_state()
@@ -323,28 +376,35 @@ def migrate(scalr_hostname, scalr_token, tf_hostname, tf_token, account_id, vcs_
         }
     }
 
+    vars_to_create = {
+        "SCALR_HOSTNAME": scalr_hostname,
+        "SCALR_TOKEN": scalr_token,
+        "TFE_HOSTNAME": tf_hostname,
+        "TFE_TOKEN": tf_token,
+    }
+
     print("Initializing backend secrets...")
-    create_variable("SCALR_HOSTNAME", scalr_hostname, "shell", False, "Created by migrator", account_relationships)
-    create_variable("SCALR_TOKEN", scalr_token, "shell", True, "Created by migrator", account_relationships)
-    create_variable("TFE_HOSTNAME", tf_hostname, "shell", False, "Created by migrator", account_relationships)
-    create_variable("TFE_TOKEN", tf_token, "shell", True, "Created by migrator", account_relationships)
+    for key in vars_to_create:
+        if fetch_scalr("vars", {"filter[account]": account_id, "filter[key]": key})["data"]:
+            continue
+        print(f"Missing shell variable `{key}`. Creating...")
+        create_variable(key, vars_to_create[key], "shell", False, "Created by migrator", account_relationships)
     print("Initializing backend secrets... Done")
 
-    ignore_organizations = ignore_organizations.split(',')
-    for organization in fetch_tfc("organizations")["data"]:
-        organization_name = organization["attributes"]["name"]
+    organization = fetch_tfc(f"organizations/{tf_organization}")["data"]
+    if not scalr_environment:
+        scalr_environment = tf_organization
 
-        if organization_name in ignore_organizations:
-            print(f"Skipping ignored organization {organization_name}.")
-            continue
+    env = fetch_scalr("environments", {"query": scalr_environment})["data"]
+    if len(env):
+        env = env[0]
+    else:
+        print(f"Migrating organization {tf_organization}...")
+        env = create_environment(organization["attributes"]["cost-estimation-enabled"])["data"]
 
-        print(f"Migrating organization {organization_name}...")
-        env = create_environment(
-            organization_name,
-            organization["attributes"]["cost-estimation-enabled"]
-        )
-        migrate_workspaces()
-        print(f"Migrating organization {organization_name}... Done")
+    workspaces = workspaces.split(',')
+    migrate_workspaces()
+    print(f"Migrating organization {tf_organization} ({scalr_environment})... Done")
 
     sys.exit(0)
 
