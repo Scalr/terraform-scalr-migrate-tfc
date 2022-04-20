@@ -44,7 +44,7 @@ variable "scalr_vcs_provider_id" {
 
 variable "scalr_environment" {
   type = string
-  default = null
+  default = ""
   description = <<EOF
     The name of a Scalr environment. By default, it takes the TFC/E organization to name a Scalr environment after.
     But users could set a custom environment name, e.g. if they manage everything in a single organization,
