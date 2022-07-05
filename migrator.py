@@ -14,8 +14,10 @@ def cli():
 
 def validate_vcs_id_set(ctx, param, value):
     # if not skip_workspace_creation than vcs_id must be set.
-    if not ctx.params.get('skip_workspace_creation') and not value:
-        raise click.BadParameter(f"If --skip-workspace-creation flag is not set, a valid vcs_id must be passed.")
+    if not ctx.params.get("skip_workspace_creation") and not value:
+        raise click.BadParameter(
+            f"If --skip-workspace-creation flag is not set, a valid vcs_id must be passed."
+        )
     return value
 
 
@@ -365,11 +367,10 @@ def migrate(
                 if workspace_name not in workspaces and "*" not in workspaces:
                     continue
 
-                workspace_exists = fetch_scalr("workspaces",
-                                               {"filter[name]": workspace_name,
-                                                "filter[environment]": env["id"]
-                                                }
-                                               )["data"]
+                workspace_exists = fetch_scalr(
+                    "workspaces",
+                    {"filter[name]": workspace_name, "filter[environment]": env["id"]},
+                )["data"]
                 # workspace must exist if skip_workspace_creation
                 # workspace must not exist if not skip_workspace_creation
                 if len(workspace_exists) ^ skip_workspace_creation:
@@ -383,10 +384,7 @@ def migrate(
                     workspace = create_workspace(tf_workspace)
                 else:
                     workspace = {
-                        "data": {
-                            "type": "workspaces",
-                            "id": workspace_exists[0]["id"]
-                        }
+                        "data": {"type": "workspaces", "id": workspace_exists[0]["id"]}
                     }
 
                 migrate_state()
