@@ -12,6 +12,12 @@ def cli():
     Scripts helper.
     """
 
+def validate_vcs_id_set(ctx, param, value):
+    # if not skip_workspace_creation than vcs_id must be set.
+    if not ctx.params.get('skip_workspace_creation') and not value:
+        raise click.BadParameter(f"If --skip-workspace-creation flag is not set, a valid vcs_id must be passed.")
+    return value
+
 
 @cli.command()
 @click.option(
@@ -62,8 +68,10 @@ def cli():
     "-v",
     "--vcs_id",
     type=str,
+    default="",
     multiple=False,
     help="VCS identifier",
+    callback=validate_vcs_id_set,
 )
 @click.option(
     "-w",
@@ -71,6 +79,13 @@ def cli():
     type=str,
     multiple=False,
     help="Workspaces to migrate. By default - all",
+)
+@click.option(
+    "--skip-workspace-creation",
+    default=False,
+    is_flag=True,
+    multiple=False,
+    help="Don't create new workspace in Scalr",
 )
 @click.option(
     "-l",
@@ -89,6 +104,7 @@ def migrate(
     account_id,
     vcs_id,
     workspaces,
+    skip_workspace_creation,
     lock
 ):
     def encode_filters(filters):
@@ -349,17 +365,30 @@ def migrate(
                 if workspace_name not in workspaces and "*" not in workspaces:
                     continue
 
-                if fetch_scalr(
-                    "workspaces",
-                    {"filter[name]": workspace_name, "filter[environment]": env["id"]}
-                )["data"]:
+                workspace_exists = fetch_scalr("workspaces",
+                                               {"filter[name]": workspace_name,
+                                                "filter[environment]": env["id"]
+                                                }
+                                               )["data"]
+                # workspace must exist if skip_workspace_creation
+                # workspace must not exist if not skip_workspace_creation
+                if len(workspace_exists) ^ skip_workspace_creation:
                     continue
 
-                if not tf_workspace["attributes"]["vcs-repo"]:
-                    continue
+                if not skip_workspace_creation:
+                    if not tf_workspace["attributes"]["vcs-repo"]:
+                        continue
 
-                print(f"Migrating workspace {workspace_name}...")
-                workspace = create_workspace(tf_workspace)
+                    print(f"Migrating workspace {workspace_name}...")
+                    workspace = create_workspace(tf_workspace)
+                else:
+                    workspace = {
+                        "data": {
+                            "type": "workspaces",
+                            "id": workspace_exists[0]["id"]
+                        }
+                    }
+
                 migrate_state()
                 migrate_variables()
                 lock_tfc_workspace()
