@@ -31,6 +31,7 @@ resource "null_resource" "migrate" {
     -a ${var.scalr_account_id} \
     -v ${var.scalr_vcs_provider_id} \
     -w "${local.workspaces}" \
+    --skip-workspace-creation=${var.skip_workspace_creation} \
     ${local.lock_tfc_workspace}
     EOF
   }

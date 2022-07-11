@@ -57,3 +57,9 @@ variable "lock_tf_workspace" {
   default = true
   description = "Whether to lock TFC/E workspaces from the runs execution in order to avoid the state conflicts."
 }
+
+variable "skip_workspace_creation" {
+  type = bool
+  default = false
+  description = "Whether to create new workspaces in Scalr. Set to True if workspace is already created in Scalr."
+}
