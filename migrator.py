@@ -383,9 +383,7 @@ def migrate(
                     print(f"Migrating workspace {workspace_name}...")
                     workspace = create_workspace(tf_workspace)
                 else:
-                    workspace = {
-                        "data": {"type": "workspaces", "id": workspace_exists[0]["id"]}
-                    }
+                    workspace = {"data": workspace_exists[0]}
 
                 migrate_state()
                 migrate_variables()
