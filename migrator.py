@@ -85,9 +85,8 @@ def validate_vcs_id_set(ctx, param, value):
 @click.option(
     "--skip-workspace-creation",
     default=False,
-    is_flag=True,
     multiple=False,
-    help="Don't create new workspace in Scalr",
+    help="Whether to create new workspaces in Scalr. Set to True if workspace is already created in Scalr.",
 )
 @click.option(
     "-l",

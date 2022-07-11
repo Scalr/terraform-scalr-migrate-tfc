@@ -28,6 +28,7 @@ resource "null_resource" "migrate" {
     --scalr-hostname=${var.scalr_hostname} \
     --scalr-token=${var.scalr_token} \
     --scalr-environment=${var.scalr_environment} \
+    --skip-workspace-creation=${var.skip_workspace_creation} \
     -a ${var.scalr_account_id} \
     -v ${var.scalr_vcs_provider_id} \
     -w "${local.workspaces}" \
