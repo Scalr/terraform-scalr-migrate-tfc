@@ -63,3 +63,9 @@ variable "skip_workspace_creation" {
   default = false
   description = "Whether to create new workspaces in Scalr. Set to True if workspace is already created in Scalr."
 }
+
+variable "skip_backend_secrets" {
+  type = bool
+  default = false
+  description = "Whether to create shell variables (`SCALR_` and `TFC_`) in Scalr."
+}

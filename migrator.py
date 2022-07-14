@@ -86,7 +86,13 @@ def validate_vcs_id_set(ctx, param, value):
     "--skip-workspace-creation",
     default=False,
     multiple=False,
-    help="Whether to create new workspaces in Scalr. Set to True if workspace is already created in Scalr.",
+    help="Whether to create new workspaces in Scalr. Set to True if the workspace is already created in Scalr.",
+)
+@click.option(
+    "--skip-backend-secrets",
+    default=False,
+    multiple=False,
+    help="Whether to create shell variables (`SCALR_` and `TFC_`) in Scalr.",
 )
 @click.option(
     "-l",
@@ -106,6 +112,7 @@ def migrate(
     vcs_id,
     workspaces,
     skip_workspace_creation,
+    skip_backend_secrets,
     lock
 ):
     def encode_filters(filters):
@@ -391,30 +398,36 @@ def migrate(
             if not next_page:
                 break
 
-    account_relationships = {
-        "account": {
-            "data": {
-                "type": "accounts",
-                "id": account_id
+    def init_backend_secrets():
+        if skip_backend_secrets:
+            return
+
+        account_relationships = {
+            "account": {
+                "data": {
+                    "type": "accounts",
+                    "id": account_id
+                }
             }
         }
-    }
 
-    vars_to_create = {
-        "SCALR_HOSTNAME": scalr_hostname,
-        "SCALR_TOKEN": scalr_token,
-        "TFE_HOSTNAME": tf_hostname,
-        "TFE_TOKEN": tf_token,
-    }
+        vars_to_create = {
+            "SCALR_HOSTNAME": scalr_hostname,
+            "SCALR_TOKEN": scalr_token,
+            "TFE_HOSTNAME": tf_hostname,
+            "TFE_TOKEN": tf_token,
+        }
 
-    print("Initializing backend secrets...")
-    for key in vars_to_create:
-        if fetch_scalr("vars", {"filter[account]": account_id, "filter[key]": key})["data"]:
-            continue
-        print(f"Missing shell variable `{key}`. Creating...")
-        create_variable(key, vars_to_create[key], "shell", False, "Created by migrator", account_relationships)
-    print("Initializing backend secrets... Done")
+        print("Initializing backend secrets...")
+        for key in vars_to_create:
+            vars_filters = {"filter[account]": account_id, "filter[key]": key, "filter[environment]": None}
+            if fetch_scalr("vars", vars_filters)["data"]:
+                continue
+            print(f"Missing shell variable `{key}`. Creating...")
+            create_variable(key, vars_to_create[key], "shell", False, "Created by migrator", account_relationships)
+        print("Initializing backend secrets... Done")
 
+    init_backend_secrets()
     organization = fetch_tfc(f"organizations/{tf_organization}")["data"]
     if not scalr_environment:
         scalr_environment = tf_organization

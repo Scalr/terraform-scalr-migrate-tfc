@@ -29,6 +29,7 @@ resource "null_resource" "migrate" {
     --scalr-token=${var.scalr_token} \
     --scalr-environment=${var.scalr_environment} \
     --skip-workspace-creation=${var.skip_workspace_creation} \
+    --skip-backend-secrets=${var.skip_backend_secrets} \
     -a ${var.scalr_account_id} \
     -v ${var.scalr_vcs_provider_id} \
     -w "${local.workspaces}" \
