@@ -424,7 +424,7 @@ def migrate(
             if fetch_scalr("vars", vars_filters)["data"]:
                 continue
             print(f"Missing shell variable `{key}`. Creating...")
-            create_variable(key, vars_to_create[key], "shell", False, "Created by migrator", account_relationships)
+            create_variable(key, vars_to_create[key], "shell", True, "Created by migrator", account_relationships)
         print("Initializing backend secrets... Done")
 
     init_backend_secrets()
