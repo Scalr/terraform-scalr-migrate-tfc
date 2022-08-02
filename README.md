@@ -39,9 +39,9 @@ module "migrator" {
   # optional inputs
   # by default, it takes the TFC/E organization name to name a Scalr environment after. 
   # But users could set a custom environment name
-  scalr_environment = "<tf-environment-name>" 
+  scalr_environment = "<scalr-environment-ID>" 
   # by default, the tool migrates all Terraform Cloud/Enterprise workspaces, but the user can control 
-  # which workspaces do not migrate into Scalr, e.g. workspace that manages other Terraform Cloud workspaces
+  # which workspaces you want to migrate into Scalr.
   workspaces = ["*"]
   # by default, the tool locks Terraform Cloud/Enterprise workspaces in order to keep a single source of state
   lock_tf_workspace = true
