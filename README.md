@@ -49,5 +49,5 @@ module "migrator" {
 ```
 
 * Run `terraform init` and then `terraform apply`
-* After the migration is done you still have to configure [provider configurations]([https://docs.scalr.com/en/latest/cloud_credentials.html](https://docs.scalr.io/docs/provider-configurations)) or sensitive shell variables order to authorize your pipelines.
+* After the migration is done you still have to configure the [provider configurations](https://docs.scalr.io/docs/provider-configurations) or sensitive shell variables order to authorize your pipelines.
 * After the secrets configuration is done - trigger the run to double-check workspaces work as expected and generate no changes.
