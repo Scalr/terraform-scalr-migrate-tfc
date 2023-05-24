@@ -1,7 +1,6 @@
 resource "null_resource" "install-requirements" {
   triggers = {
-    organization = var.tf_organization
-    workspaces = local.workspaces
+    time = timestamp()
   }
 
   provisioner "local-exec" {
