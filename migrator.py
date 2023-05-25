@@ -6,11 +6,13 @@ import requests
 import sys
 from urllib.parse import urlencode
 
+
 @click.group()
 def cli():
     """
     Scripts helper.
     """
+
 
 def validate_vcs_id_set(ctx, param, value):
     # if not skip_workspace_creation than vcs_id must be set.
@@ -68,9 +70,8 @@ def validate_vcs_id_set(ctx, param, value):
 )
 @click.option(
     "-v",
-    "--vcs_id",
+    "--vcs-id",
     type=str,
-    default="",
     multiple=False,
     help="VCS identifier",
     callback=validate_vcs_id_set,
@@ -84,13 +85,13 @@ def validate_vcs_id_set(ctx, param, value):
 )
 @click.option(
     "--skip-workspace-creation",
-    default=False,
+    is_flag=True,
     multiple=False,
     help="Whether to create new workspaces in Scalr. Set to True if the workspace is already created in Scalr.",
 )
 @click.option(
     "--skip-backend-secrets",
-    default=False,
+    is_flag=True,
     multiple=False,
     help="Whether to create shell variables (`SCALR_` and `TFC_`) in Scalr.",
 )
@@ -399,6 +400,7 @@ def migrate(
                 break
 
     def init_backend_secrets():
+        print(skip_backend_secrets)
         if skip_backend_secrets:
             return
 
