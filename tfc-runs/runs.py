@@ -53,17 +53,30 @@ def list_all(hostname):
             sys.exit(1)
         return response.json()
 
+    def fetch_organizations(page_number=1):
+        return fetch_tfc("organizations",  [('page[size]', '100'), ('page[number]', page_number)])
+
+    def fetch_workspaces(org_name, page_number=1):
+        return fetch_tfc(f"organizations/{org_name}/workspaces", [('page[size]', '100'), ('page[number]', page_number)])
+
     total_runs = 0
-    organizations = fetch_tfc("organizations")
-    for organization in organizations["data"]:
-        name = organization["attributes"]["name"]
-        workspaces = fetch_tfc(f"organizations/{name}/workspaces")
-        for workspace in workspaces["data"]:
-            ws_name = workspace["attributes"]["name"]
-            runs = fetch_tfc(f"workspaces/{workspace['id']}/runs")
-            ws_total = runs["meta"]["status-counts"]["total"]
-            print(f"Workspace {ws_name} has had {ws_total} runs.")
-            total_runs += ws_total
+    organizations_token = 1
+
+    while organizations_token:
+        organizations = fetch_organizations(organizations_token)
+        organizations_token = organizations["meta"]["pagination"]["next-page"]
+
+        for organization in organizations["data"]:
+            name = organization["attributes"]["name"]
+            workspaces_token = 1
+            while workspaces_token:
+                workspaces = fetch_workspaces(name, workspaces_token)
+                workspaces_token = workspaces["meta"]["pagination"]["next-page"]
+                for workspace in workspaces["data"]:
+                    ws_name = workspace["attributes"]["name"]
+                    ws_total = fetch_tfc(f"workspaces/{workspace['id']}/runs")["meta"]["status-counts"]["total"]
+                    print(f"Workspace {name}/{ws_name} has had {ws_total} runs.")
+                    total_runs += ws_total
     print("---------------------------")
     print(f"The total runs count across all organizations: {total_runs}")
     sys.exit(0)
