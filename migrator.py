@@ -224,7 +224,7 @@ def migrate(
                     "operations": attributes["operations"],
                     "terraform-version": attributes["terraform-version"],
                     "vcs-repo": {
-                        "identifier": attributes["vcs-repo"]["identifier"],
+                        "identifier": attributes["vcs-repo"]["display-identifier"],
                         "branch":  attributes["vcs-repo"]["branch"] if attributes["vcs-repo"]["branch"] else None,
                         "dry-runs-enabled": attributes["speculative-enabled"],
                         "trigger-prefixes": attributes["trigger-prefixes"]
