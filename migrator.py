@@ -123,19 +123,18 @@ def migrate(
         return encoded
 
     def fetch_tfc(route, filters=None):
-        response = requests.get(
-            f"https://{tf_hostname}/api/v2/{route}{encode_filters(filters)}",
-            headers={"Authorization": f"Bearer {tf_token}"}
-        )
+        req =  f"https://{tf_hostname}/api/v2/{route}{encode_filters(filters)}"
+        response = requests.get(req,headers={"Authorization": f"Bearer {tf_token}"})
 
         if response.status_code not in [200]:
-            print(response.json()["errors"][0])
+            print(f"\r\nURL: {req}\r\nResponse: {response.json()['errors'][0]}")
             sys.exit(1)
         return response.json()
 
     def write_tfc(route, data):
+        req = f"https://{tf_hostname}/api/v2/{route}"
         response = requests.post(
-            f"https://{tf_hostname}/api/v2/{route}",
+            req,
             headers={
                 "Authorization": f"Bearer {tf_token}",
                 "Content-Type": "application/vnd.api+json"
@@ -144,25 +143,26 @@ def migrate(
         )
 
         if response.status_code not in [201, 200]:
+            print(f"\r\nURL: {req}\r\nResponse: {response.json()['errors'][0]}")
             print(data)
             print(response.json()["errors"][0])
             sys.exit(1)
         return response.json()
 
     def fetch_scalr(route, filters=None):
-        response = requests.get(
-            f"https://{scalr_hostname}/api/iacp/v3/{route}{encode_filters(filters)}",
-            headers={"Authorization": f"Bearer {scalr_token}", "Prefer": "profile=preview"}
-        )
+        req = f"https://{scalr_hostname}/api/iacp/v3/{route}{encode_filters(filters)}"
+        response = requests.get(req,headers={"Authorization": f"Bearer {scalr_token}", "Prefer": "profile=preview"})
 
         if response.status_code not in [200]:
+            print(f"URL: '{req}'\r\nResponse: '{response.json()['errors'][0]}")
             print(response.json()["errors"][0])
             sys.exit(1)
         return response.json()
 
     def write_scalr(route, data):
+        req = f"https://{scalr_hostname}/api/iacp/v3/{route}"
         response = requests.post(
-            f"https://{scalr_hostname}/api/iacp/v3/{route}",
+            req,
             headers={
                 "Authorization": f"Bearer {scalr_token}",
                 "Prefer": "profile=preview",
@@ -172,6 +172,7 @@ def migrate(
         )
 
         if response.status_code not in [201]:
+            print(f"\r\nURL: {req}\r\nResponse: {response.json()['errors'][0]}")
             print(data)
             print(response.json()["errors"][0])
             sys.exit(1)
