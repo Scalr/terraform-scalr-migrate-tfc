@@ -18,7 +18,7 @@ variable "tf_organization" {
 variable "workspaces" {
   type = list(string)
   default = ["*"]
-  description = "List of organizations that should not be migrated into Scalr. By default all ones are migrated."
+  description = "List of workspace that should be migrated into Scalr. By default all ones are migrated."
 }
 
 variable "scalr_hostname" {

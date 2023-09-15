@@ -5,16 +5,16 @@ This module helps Terraform Cloud/Enterprise users migrate their workspaces to [
 
 Prior to the migration, please do the following:
 
-* Obtain a TFC/E access token. This can be done in two ways: [manually](https://app.terraform.io/app/settings/tokens) or via [terraform login](https://www.terraform.io/cli/commands/login).
-* Obtain a Scalr access token. This can be done in two ways: [manually](https://scalr.io/app/settings/tokens) or via [terraform login account-name.scalr.io](https://www.terraform.io/cli/commands/login).
-* Register a [VCS provider](https://docs.scalr.com/en/latest/vcs_providers.html) in Scalr. Note that the registered provider must have the access to all repositories connected to the TFC/E workspaces. After the provider is created, copy the VCS provider id.
+* Obtain a TFC/E personal or team access token. This can be done in two ways: [manually](https://app.terraform.io/app/settings/tokens) or via [terraform login](https://www.terraform.io/cli/commands/login).
+* Obtain a Scalr access token. The easiest way it to obtain via the `terraform login account-name.scalr.io` command.
+* Register a [VCS provider](https://docs.scalr.io/docs/integrations) in Scalr. Note that the registered provider must have the access to all repositories connected to the TFC/E workspaces. After the provider is created, copy the VCS provider id.
 * Obtain the Scalr account identifier. It can be found on the account dashboard.
 
 What Terraform Cloud/Enterprise objects will be migrated:
 
 * Organizations - Will be migrated into [Scalr environments](https://docs.scalr.com/en/latest/hierarchy.html#environments)
 * Workspaces - Will be migrated into [Scalr workspaces](https://docs.scalr.com/en/latest/workspaces.html). Only VCS based workspaces will be migrated. CLI-driven workspaces have to be [migrated manually](https://docs.scalr.com/en/latest/migration.html).  
-* Workspace variables - Terraform and non-sensitive environment variables will be created as Terraform and shell variables in Scalr.
+* Workspace variables - Terraform and non-sensitive environment variables will be created as Terraform and shell variables at the workspace level.
 * State files - The current state file of a workspace will be migrated to Scalr state storage.
 
 Usage
