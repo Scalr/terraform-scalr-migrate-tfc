@@ -116,6 +116,12 @@ def migrate(
     skip_backend_secrets,
     lock
 ):
+    def _get_tfc_headers():
+        return  {
+            "Authorization": f"Bearer {tf_token}",
+            "Content-Type": "application/vnd.api+json",
+        }
+
     def encode_filters(filters):
         encoded = ''
         if filters:
@@ -124,7 +130,7 @@ def migrate(
 
     def fetch_tfc(route, filters=None):
         req =  f"https://{tf_hostname}/api/v2/{route}{encode_filters(filters)}"
-        response = requests.get(req,headers={"Authorization": f"Bearer {tf_token}"})
+        response = requests.get(req, headers=_get_tfc_headers())
 
         if response.status_code not in [200]:
             print(f"\r\nURL: {req}\r\nResponse: {response.json()['errors'][0]}")
@@ -133,14 +139,7 @@ def migrate(
 
     def write_tfc(route, data):
         req = f"https://{tf_hostname}/api/v2/{route}"
-        response = requests.post(
-            req,
-            headers={
-                "Authorization": f"Bearer {tf_token}",
-                "Content-Type": "application/vnd.api+json"
-            },
-            data=json.dumps(data)
-        )
+        response = requests.post(req, headers=_get_tfc_headers(), data=json.dumps(data))
 
         if response.status_code not in [201, 200]:
             print(f"\r\nURL: {req}\r\nResponse: {response.json()['errors'][0]}")
@@ -240,7 +239,7 @@ def migrate(
 
     def create_state(tfc_state, workspace_id):
         attributes = tfc_state["attributes"]
-        raw_state = requests.get(attributes["hosted-state-download-url"])
+        raw_state = requests.get(attributes["hosted-state-download-url"], headers=_get_tfc_headers())
         encoded_state = binascii.b2a_base64(raw_state.content)
         decoded = binascii.a2b_base64(encoded_state)
         data = {
@@ -401,7 +400,6 @@ def migrate(
                 break
 
     def init_backend_secrets():
-        print(skip_backend_secrets)
         if skip_backend_secrets:
             return
 
