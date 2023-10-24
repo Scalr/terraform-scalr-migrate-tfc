@@ -242,34 +242,27 @@ def migrate(
         raw_state = requests.get(attributes["hosted-state-download-url"], headers=_get_tfc_headers())
         encoded_state = binascii.b2a_base64(raw_state.content)
         decoded = binascii.a2b_base64(encoded_state)
-        data = {
-          "data": {
-            "type": "state-versions",
-            "attributes": {
-              "serial": attributes["serial"],
-              "md5": hashlib.md5(decoded).hexdigest(),
-              "lineage": raw_state.json()["lineage"],
-              "state": encoded_state.decode("utf-8")
+        state_version = {
+            "data": {
+                "type": "state-versions",
+                "attributes": {
+                    "serial": attributes["serial"],
+                    "md5": hashlib.md5(decoded).hexdigest(),
+                    "lineage": raw_state.json()["lineage"],
+                    "state": encoded_state.decode("utf-8")
+                },
+                "relationships": {
+                    "workspace": {
+                        "data": {
+                            "type": "workspaces",
+                            "id": workspace_id
+                        }
+                    }
+                }
             }
-          }
         }
 
-        response = requests.post(
-            f"https://{scalr_hostname}/api/tfe/v2/workspaces/{workspace_id}/state-versions",
-            headers={
-                "Authorization": f"Bearer {scalr_token}",
-                "Prefer": "profile=preview",
-                "Content-Type": "application/vnd.api+json"
-            },
-            data=json.dumps(data)
-        )
-
-        if response.status_code != 201:
-            print(data)
-            print(response.json()["errors"][0])
-            sys.exit(1)
-
-        return response.json()
+        return write_scalr("state-versions", state_version)
 
     def create_variable(variable_key, value, category, sensitive, description=None, relationships=None):
         data = {
