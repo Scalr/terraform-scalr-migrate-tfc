@@ -3,7 +3,7 @@ Migration TFC/E to Scalr
 
 This module helps Terraform Cloud/Enterprise users migrate their workspaces to [Scalr](https://scalr.com) remote backend.
 
-Prior to the migration, please do the following:
+Before the migration, please do the following:
 
 * Obtain a TFC/E personal or team access token. This can be done in two ways: [manually](https://app.terraform.io/app/settings/tokens) or via [terraform login](https://www.terraform.io/cli/commands/login).
 * Obtain a Scalr access token. The easiest way it to obtain via the `terraform login account-name.scalr.io` command.
