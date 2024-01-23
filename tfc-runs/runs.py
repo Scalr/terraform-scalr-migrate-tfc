@@ -54,6 +54,7 @@ def list_all(hostname):
         if status_code not in [200]:
             if status_code == 401:
                 print(f"The token is expired or invalid. {continue_message}")
+                sys.exit(1)
             elif status_code == 429:
                 if retry_attempt <= 10:
                     retry_attempt += 1
