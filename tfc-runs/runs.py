@@ -1,8 +1,10 @@
 import click
 import json
-import requests
+import math
 import os
+import requests
 import sys
+import time
 from urllib.parse import urlencode
 
 
@@ -42,15 +44,29 @@ def list_all(hostname):
     def encode_filters(filters):
         return f"?{urlencode(filters)}" if filters else ""
 
-    def fetch_tfc(route, filters=None):
+    def fetch_tfc(route, filters=None, retry_attempt=0):
         response = requests.get(
             f"https://{hostname}/api/v2/{route}{encode_filters(filters)}",
             headers={"Authorization": f"Bearer {tf_token}"}
         )
 
-        if response.status_code not in [200]:
-            print(response.json()["errors"][0])
-            sys.exit(1)
+        status_code = response.status_code
+        if status_code not in [200]:
+            if status_code == 401:
+                print(f"The token is expired or invalid. {continue_message}")
+            elif status_code == 429:
+                if retry_attempt <= 10:
+                    retry_attempt += 1
+                    retry_in = math.ceil(float(response.headers.get('x-ratelimit-reset', 60)))
+                    print(f"API rate limited, retrying in {retry_in} seconds, attempt #{retry_attempt}")
+                    time.sleep(retry_in)
+                    return fetch_tfc(route, filters, retry_attempt)
+                else:
+                    print("API rate limited, the maximum number of attempts exceeded")
+                    sys.exit(1)
+            else:
+                print(response.json()["errors"][0])
+                sys.exit(1)
         return response.json()
 
     def fetch_organizations(page_number=1):
