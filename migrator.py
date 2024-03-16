@@ -1,5 +1,6 @@
 import binascii
 import click
+import fnmatch
 import hashlib
 import json
 import requests
@@ -297,6 +298,12 @@ def migrate(
             for tf_state in fetch_tfc("state-versions", state_filters)["data"]:
                 create_state(tf_state, workspace["data"]["id"])
 
+        def should_migrate_workspace(workspace_name):
+            for workspace in workspaces:
+                if fnmatch.fnmatch(workspace_name, workspace):
+                    return True
+            return False
+
         def migrate_variables():
             print("Migrating variables...")
 
@@ -364,7 +371,8 @@ def migrate(
 
             for tf_workspace in tfc_workspaces["data"]:
                 workspace_name = tf_workspace["attributes"]["name"]
-                if workspace_name not in workspaces and "*" not in workspaces:
+                if not should_migrate_workspace(workspace_name):
+                    print(f"Skipping workspace {workspace_name}...")
                     continue
 
                 workspace_exists = fetch_scalr(
