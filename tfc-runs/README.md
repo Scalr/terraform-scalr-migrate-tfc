@@ -1,5 +1,5 @@
 # TFC Runs
-Get the total number of runs executed in TFC
+Get the total number of runs ever executed in a Terraform Cloud account. As far as we know, the TFC API does not provider a date filter to break the run count down by month or year, but the goal of this is to give you a starting point to help with Scalr run estimation.
 
 ## Requirements:
 * `python3` and `pip3`
