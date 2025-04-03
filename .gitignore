@@ -32,3 +32,5 @@ override.tf.json
 # IDE Files
 *.idea/
 *.vscode/
+venv
+generated_terraform
