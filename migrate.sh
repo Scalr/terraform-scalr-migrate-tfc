@@ -8,7 +8,7 @@ read_tfrc_credentials() {
         if [ -n "$SCALR_HOSTNAME" ]; then
             local scalr_token=$(jq -r ".credentials.\"$SCALR_HOSTNAME\".token" "$tfrc_file" 2>/dev/null)
             if [ -n "$scalr_token" ] && [ "$scalr_token" != "null" ]; then
-                SCALR_TOKEN=${SCALR_TOKEN:-$scalr_token}
+                export SCALR_TOKEN=${SCALR_TOKEN:-$scalr_token}
             fi
         fi
 
@@ -192,6 +192,8 @@ fi
 if [ "$LOCK" = "true" ]; then
     ARGS+=("--lock")
 fi
+
+pip3 install packaging
 
 # Run migrator.py
 echo "Starting migration process..."
