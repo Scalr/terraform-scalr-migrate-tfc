@@ -193,7 +193,9 @@ if [ "$LOCK" = "true" ]; then
     ARGS+=("--lock")
 fi
 
-pip3 install packaging
+echo "Installing dependencies..."
+
+pip3 install -r requirements.txt --quiet
 
 # Run migrator.py
 echo "Starting migration process..."
