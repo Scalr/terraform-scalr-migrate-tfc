@@ -1,68 +1,65 @@
 #!/bin/bash
 
-# Function to read credentials from Terraform credentials file
-read_tfrc_credentials() {
-    local tfrc_file="$HOME/.terraform.d/credentials.tfrc.json"
-    if [ -f "$tfrc_file" ]; then
-        # Read Scalr credentials
-        if [ -n "$SCALR_HOSTNAME" ]; then
-            local scalr_token=$(jq -r ".credentials.\"$SCALR_HOSTNAME\".token" "$tfrc_file" 2>/dev/null)
-            if [ -n "$scalr_token" ] && [ "$scalr_token" != "null" ]; then
-                export SCALR_TOKEN=${SCALR_TOKEN:-$scalr_token}
-            fi
-        fi
+set -e
 
-        # Read TFC/E credentials
-        if [ -n "$TF_HOSTNAME" ]; then
-            local tf_token=$(jq -r ".credentials.\"$TF_HOSTNAME\".token" "$tfrc_file" 2>/dev/null)
-            if [ -n "$tf_token" ] && [ "$tf_token" != "null" ]; then
-                TF_TOKEN=${TF_TOKEN:-$tf_token}
-            fi
+# Default values
+DEFAULT_MANAGEMENT_ENV_NAME="terraform-management"
+DEFAULT_MANAGEMENT_WORKSPACE_NAME="workspace-management"
+
+# Function to read credentials from file
+read_tfrc_credentials() {
+    local credentials_file="$HOME/.terraform.d/credentials.tfrc.json"
+    if [ -f "$credentials_file" ]; then
+        # Read Scalr token
+        local scalr_token=$(jq -r ".credentials.\"$SCALR_HOSTNAME\".token" "$credentials_file" 2>/dev/null)
+        if [ "$scalr_token" != "null" ]; then
+            export SCALR_TOKEN="$scalr_token"
+        fi
+        
+        # Read TFC token
+        local tfc_token=$(jq -r ".credentials.\"$TFC_HOSTNAME\".token" "$credentials_file" 2>/dev/null)
+        if [ "$tfc_token" != "null" ]; then
+            export TFC_TOKEN="$tfc_token"
         fi
     fi
 }
 
-# Default parameters
-SCALR_HOSTNAME=${SCALR_HOSTNAME:-"account.scalr.io"}
-SCALR_TOKEN=${SCALR_TOKEN:-""}
-SCALR_ENVIRONMENT=${SCALR_ENVIRONMENT:-""}
-TF_HOSTNAME=${TF_HOSTNAME:-"app.terraform.io"}
-TF_TOKEN=${TF_TOKEN:-""}
-TF_ORGANIZATION=${TF_ORGANIZATION:-""}
-ACCOUNT_ID=${ACCOUNT_ID:-""}
-VCS_ID=${VCS_ID:-""}
-WORKSPACES=${WORKSPACES:-"*"}
-SKIP_WORKSPACE_CREATION=${SKIP_WORKSPACE_CREATION:-"false"}
-SKIP_BACKEND_SECRETS=${SKIP_BACKEND_SECRETS:-"false"}
-LOCK=${LOCK:-"false"}
-MANAGEMENT_ENV_NAME=${MANAGEMENT_ENV_NAME:-"terraform-management"}
-MANAGEMENT_WORKSPACE_NAME=${MANAGEMENT_WORKSPACE_NAME:-"workspace-management"}
-
-# Function to display usage
-usage() {
-    echo "Usage: $0 [options]"
-    echo "Options:"
-    echo "  --scalr-hostname HOSTNAME     Scalr hostname (default: $SCALR_HOSTNAME)"
-    echo "  --scalr-token TOKEN          Scalr token (will be read from credentials.tfrc.json if not provided)"
-    echo "  --scalr-environment ENV      Scalr environment (optional)"
-    echo "  --tf-hostname HOSTNAME       TFC/E hostname (default: $TF_HOSTNAME)"
-    echo "  --tf-token TOKEN             TFC/E token (will be read from credentials.tfrc.json if not provided)"
-    echo "  --tf-organization ORG        TFC/E organization name"
-    echo "  --account-id ID              Scalr account ID"
-    echo "  --vcs-id ID                  VCS identifier"
-    echo "  --workspaces PATTERN         Workspaces to migrate (default: $WORKSPACES)"
-    echo "  --skip-workspace-creation    Skip workspace creation in Scalr"
-    echo "  --skip-backend-secrets       Skip backend secrets creation"
-    echo "  --lock                       Lock TFE workspaces"
-    echo "  --management-env-name NAME   Management environment name (default: $MANAGEMENT_ENV_NAME)"
-    echo "  --management-workspace-name NAME  Management workspace name (default: $MANAGEMENT_WORKSPACE_NAME)"
-    echo "  -h, --help                   Display this help message"
-    echo ""
-    echo "Note: Tokens can be provided via:"
-    echo "  1. Command line arguments"
-    echo "  2. Environment variables (SCALR_TOKEN, TF_TOKEN)"
-    echo "  3. ~/.terraform.d/credentials.tfrc.json file"
-    exit 1
+# Function to validate required parameters
+validate_required_params() {
+    local missing_params=()
+    
+    if [ -z "$SCALR_HOSTNAME" ]; then
+        missing_params+=("SCALR_HOSTNAME")
+    fi
+    
+    if [ -z "$SCALR_TOKEN" ]; then
+        missing_params+=("SCALR_TOKEN")
+    fi
+    
+    if [ -z "$TFC_HOSTNAME" ]; then
+        missing_params+=("TFC_HOSTNAME")
+    fi
+    
+    if [ -z "$TFC_TOKEN" ]; then
+        missing_params+=("TFC_TOKEN")
+    fi
+    
+    if [ -z "$TFC_ORGANIZATION" ]; then
+        missing_params+=("TFC_ORGANIZATION")
+    fi
+    
+    if [ -z "$SCALR_ACCOUNT_ID" ]; then
+        missing_params+=("SCALR_ACCOUNT_ID")
+    fi
+    
+    if [ ${#missing_params[@]} -ne 0 ]; then
+        echo "Error: Missing required parameters: ${missing_params[*]}"
+        echo "Please provide these parameters either through:"
+        echo "1. Command-line arguments"
+        echo "2. Environment variables"
+        echo "3. ~/.terraform.d/credentials.tfrc.json file"
+        exit 1
+    fi
 }
 
 # Parse command line arguments
@@ -81,39 +78,39 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --tf-hostname)
-            TF_HOSTNAME="$2"
+            TFC_HOSTNAME="$2"
             shift 2
             ;;
         --tf-token)
-            TF_TOKEN="$2"
+            TFC_TOKEN="$2"
             shift 2
             ;;
         --tf-organization)
-            TF_ORGANIZATION="$2"
+            TFC_ORGANIZATION="$2"
             shift 2
             ;;
-        --account-id)
-            ACCOUNT_ID="$2"
+        -a|--account-id)
+            SCALR_ACCOUNT_ID="$2"
             shift 2
             ;;
-        --vcs-id)
+        -v|--vcs-id)
             VCS_ID="$2"
             shift 2
             ;;
-        --workspaces)
+        -w|--workspaces)
             WORKSPACES="$2"
             shift 2
             ;;
         --skip-workspace-creation)
-            SKIP_WORKSPACE_CREATION="true"
+            SKIP_WORKSPACE_CREATION=true
             shift
             ;;
         --skip-backend-secrets)
-            SKIP_BACKEND_SECRETS="true"
+            SKIP_BACKEND_SECRETS=true
             shift
             ;;
-        --lock)
-            LOCK="true"
+        -l|--lock)
+            LOCK=true
             shift
             ;;
         --management-env-name)
@@ -124,82 +121,52 @@ while [[ $# -gt 0 ]]; do
             MANAGEMENT_WORKSPACE_NAME="$2"
             shift 2
             ;;
-        -h|--help)
-            usage
+        --disable-deletion-protection)
+            DISABLE_DELETION_PROTECTION=true
+            shift
             ;;
         *)
             echo "Unknown option: $1"
-            usage
+            exit 1
             ;;
     esac
 done
 
-# Read credentials from Terraform credentials file if not provided
+# Read credentials from file if not provided
 read_tfrc_credentials
 
 # Validate required parameters
-if [ -z "$SCALR_TOKEN" ]; then
-    echo "Error: Scalr token not found. Please provide it via:"
-    echo "  1. --scalr-token argument"
-    echo "  2. SCALR_TOKEN environment variable"
-    echo "  3. ~/.terraform.d/credentials.tfrc.json file"
-    exit 1
-fi
+validate_required_params
 
-if [ -z "$TF_TOKEN" ]; then
-    echo "Error: TFC/E token not found. Please provide it via:"
-    echo "  1. --tf-token argument"
-    echo "  2. TF_TOKEN environment variable"
-    echo "  3. ~/.terraform.d/credentials.tfrc.json file"
-    exit 1
-fi
+# Set default values if not provided
+MANAGEMENT_ENV_NAME=${MANAGEMENT_ENV_NAME:-$DEFAULT_MANAGEMENT_ENV_NAME}
+MANAGEMENT_WORKSPACE_NAME=${MANAGEMENT_WORKSPACE_NAME:-$DEFAULT_MANAGEMENT_WORKSPACE_NAME}
 
-if [ -z "$TF_ORGANIZATION" ] || [ -z "$ACCOUNT_ID" ]; then
-    echo "Error: Required parameters are missing"
-    usage
-fi
+# Build the command
+CMD="python3 migrator.py"
+CMD="$CMD --scalr-hostname \"$SCALR_HOSTNAME\""
+CMD="$CMD --scalr-token \"$SCALR_TOKEN\""
+[ -n "$SCALR_ENVIRONMENT" ] && CMD="$CMD --scalr-environment \"$SCALR_ENVIRONMENT\""
+CMD="$CMD --tf-hostname \"$TFC_HOSTNAME\""
+CMD="$CMD --tf-token \"$TFC_TOKEN\""
+CMD="$CMD --tf-organization \"$TFC_ORGANIZATION\""
+CMD="$CMD -a \"$SCALR_ACCOUNT_ID\""
+[ -n "$VCS_ID" ] && CMD="$CMD -v \"$VCS_ID\""
+[ -n "$WORKSPACES" ] && CMD="$CMD -w \"$WORKSPACES\""
+[ "$SKIP_WORKSPACE_CREATION" = true ] && CMD="$CMD --skip-workspace-creation"
+[ "$SKIP_BACKEND_SECRETS" = true ] && CMD="$CMD --skip-backend-secrets"
+[ "$LOCK" = true ] && CMD="$CMD -l"
+[ -n "$MANAGEMENT_ENV_NAME" ] && CMD="$CMD --management-env-name \"$MANAGEMENT_ENV_NAME\""
+[ -n "$MANAGEMENT_WORKSPACE_NAME" ] && CMD="$CMD --management-workspace-name \"$MANAGEMENT_WORKSPACE_NAME\""
+[ "$DISABLE_DELETION_PROTECTION" = true ] && CMD="$CMD --disable-deletion-protection"
 
-# Build command line arguments for migrator.py
-ARGS=(
-    "--scalr-hostname" "$SCALR_HOSTNAME"
-    "--scalr-token" "$SCALR_TOKEN"
-    "--tf-hostname" "$TF_HOSTNAME"
-    "--tf-token" "$TF_TOKEN"
-    "--tf-organization" "$TF_ORGANIZATION"
-    "--account-id" "$ACCOUNT_ID"
-    "--workspaces" "$WORKSPACES"
-    "--management-env-name" "$MANAGEMENT_ENV_NAME"
-    "--management-workspace-name" "$MANAGEMENT_WORKSPACE_NAME"
-)
-
-# Add optional parameters if set
-if [ -n "$SCALR_ENVIRONMENT" ]; then
-    ARGS+=("--scalr-environment" "$SCALR_ENVIRONMENT")
-fi
-
-if [ -n "$VCS_ID" ]; then
-    ARGS+=("--vcs-id" "$VCS_ID")
-fi
-
-if [ "$SKIP_WORKSPACE_CREATION" = "true" ]; then
-    ARGS+=("--skip-workspace-creation")
-fi
-
-if [ "$SKIP_BACKEND_SECRETS" = "true" ]; then
-    ARGS+=("--skip-backend-secrets")
-fi
-
-if [ "$LOCK" = "true" ]; then
-    ARGS+=("--lock")
-fi
-
+# Install dependencies
 echo "Installing dependencies..."
-
 pip3 install -r requirements.txt --quiet
 
 # Run migrator.py
 echo "Starting migration process..."
-python3 migrator.py "${ARGS[@]}"
+eval "$CMD"
 
 # Check if migration was successful
 if [ $? -eq 0 ]; then
