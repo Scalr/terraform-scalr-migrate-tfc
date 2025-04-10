@@ -2,9 +2,19 @@
 
 set -e
 
+# Ensure Python 3.12 is available
+if ! command -v python3.12 &> /dev/null; then
+    echo "Python 3.12 is required but not found. Please install Python 3.12 first."
+    exit 1
+fi
+
 # Default values
 DEFAULT_MANAGEMENT_ENV_NAME="terraform-management"
 DEFAULT_MANAGEMENT_WORKSPACE_NAME="workspace-management"
+
+if [ -z "$TFC_HOSTNAME" ]; then
+    export TFC_HOSTNAME="app.terraform.io"
+fi
 
 # Function to read credentials from file
 read_tfrc_credentials() {
@@ -34,10 +44,6 @@ validate_required_params() {
     
     if [ -z "$SCALR_TOKEN" ]; then
         missing_params+=("SCALR_TOKEN")
-    fi
-    
-    if [ -z "$TFC_HOSTNAME" ]; then
-        missing_params+=("TFC_HOSTNAME")
     fi
     
     if [ -z "$TFC_TOKEN" ]; then
@@ -94,7 +100,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         -v|--vcs-id)
-            VCS_ID="$2"
+            SCALR_VCS_NAME="$2"
             shift 2
             ;;
         -w|--workspaces)
@@ -142,6 +148,19 @@ validate_required_params
 MANAGEMENT_ENV_NAME=${MANAGEMENT_ENV_NAME:-$DEFAULT_MANAGEMENT_ENV_NAME}
 MANAGEMENT_WORKSPACE_NAME=${MANAGEMENT_WORKSPACE_NAME:-$DEFAULT_MANAGEMENT_WORKSPACE_NAME}
 
+# Create and activate virtual environment
+if [ ! -d "venv" ]; then
+    echo "Creating virtual environment..."
+    python3.12 -m venv venv
+fi
+
+echo "Activating virtual environment..."
+source venv/bin/activate
+
+# Install dependencies
+echo "Installing dependencies..."
+pip install -r requirements.txt
+
 # Build the command
 CMD="python3 migrator.py"
 CMD="$CMD --scalr-hostname \"$SCALR_HOSTNAME\""
@@ -151,7 +170,7 @@ CMD="$CMD --tf-hostname \"$TFC_HOSTNAME\""
 CMD="$CMD --tf-token \"$TFC_TOKEN\""
 CMD="$CMD --tf-organization \"$TFC_ORGANIZATION\""
 CMD="$CMD -a \"$SCALR_ACCOUNT_ID\""
-[ -n "$VCS_ID" ] && CMD="$CMD -v \"$VCS_ID\""
+[ -n "$SCALR_VCS_NAME" ] && CMD="$CMD -v \"$SCALR_VCS_NAME\""
 [ -n "$WORKSPACES" ] && CMD="$CMD -w \"$WORKSPACES\""
 [ "$SKIP_WORKSPACE_CREATION" = true ] && CMD="$CMD --skip-workspace-creation"
 [ "$SKIP_BACKEND_SECRETS" = true ] && CMD="$CMD --skip-backend-secrets"
@@ -160,13 +179,12 @@ CMD="$CMD -a \"$SCALR_ACCOUNT_ID\""
 [ -n "$MANAGEMENT_WORKSPACE_NAME" ] && CMD="$CMD --management-workspace-name \"$MANAGEMENT_WORKSPACE_NAME\""
 [ "$DISABLE_DELETION_PROTECTION" = true ] && CMD="$CMD --disable-deletion-protection"
 
-# Install dependencies
-echo "Installing dependencies..."
-pip3 install -r requirements.txt --quiet
-
-# Run migrator.py
-echo "Starting migration process..."
+# Run the migrator
+echo "Running migrator..."
 eval "$CMD"
+
+# Deactivate virtual environment
+deactivate
 
 # Check if migration was successful
 if [ $? -eq 0 ]; then

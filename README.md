@@ -19,7 +19,7 @@ This tool helps migrate workspaces from Terraform Cloud/Enterprise (TFC/E) to Sc
 
 ## Prerequisites
 
-- Python 3.6 or later
+- Python 3.12
 - Terraform CLI
 - `jq` command-line tool (for JSON processing)
 - Access to both TFC/E and Scalr instances

@@ -7,15 +7,18 @@ import sys
 import traceback
 import urllib.error
 import urllib.request
-from os import environ
 from urllib.parse import urlencode
 from typing import Dict, List, Optional, Any
 import os
+import re
 from datetime import datetime
 from dataclasses import dataclass
 import time
 from packaging import version
-import subprocess
+
+# Check Python version
+if sys.version_info < (3, 12):
+    sys.exit("Python 3.12 or higher is required")
 
 # Constants
 MAX_TERRAFORM_VERSION = "1.5.7"
@@ -25,6 +28,9 @@ RATE_LIMIT_DELAY = 5  # seconds
 MAX_RETRIES = 3
 
 class RateLimitError(Exception):
+    pass
+
+class VCSMissingError(Exception):
     pass
 
 def handle_rate_limit(response: urllib.response.addinfourl) -> None:
@@ -64,7 +70,7 @@ def make_request(
                 time.sleep(RATE_LIMIT_DELAY)
             else:
                 raise
-        except Exception as e:
+        except Exception:
             if attempt == retries - 1:
                 raise
             time.sleep(RATE_LIMIT_DELAY)
@@ -78,7 +84,7 @@ class MigratorArgs:
     tf_token: str
     tf_organization: str
     account_id: str
-    vcs_id: Optional[str]
+    vcs_name: Optional[str]
     workspaces: str
     skip_workspace_creation: bool
     skip_backend_secrets: bool
@@ -86,6 +92,7 @@ class MigratorArgs:
     management_env_name: str = DEFAULT_MANAGEMENT_ENV_NAME
     management_workspace_name: str = DEFAULT_MANAGEMENT_WORKSPACE_NAME
     disable_deletion_protection: bool = False
+    debug_enabled: bool = False
 
     @classmethod
     def from_argparse(cls, args: argparse.Namespace) -> 'MigratorArgs':
@@ -97,7 +104,7 @@ class MigratorArgs:
             tf_token=args.tf_token,
             tf_organization=args.tf_organization,
             account_id=args.account_id,
-            vcs_id=args.vcs_id,
+            vcs_name=args.vcs_name,
             workspaces=args.workspaces or "*",
             skip_workspace_creation=args.skip_workspace_creation,
             skip_backend_secrets=args.skip_backend_secrets,
@@ -111,12 +118,13 @@ class HClAttribute:
     def __init__(self, address) -> None:
         self.hcl_value: str = address
 
-class TerraformResource:
-    def __init__(self, resource_type: str, name: str, attributes: Dict) -> None:
+class AbstractTerraformResource:
+    def __init__(self, resource_type: str, name: str, attributes: Dict, hcl_resource_type: str) -> None:
         self.resource_type = resource_type
         self.name = name
         self.attributes = attributes
         self.id = None
+        self.hcl_resource_type: str = hcl_resource_type
 
     def to_hcl(self) -> str:
         attrs = []
@@ -141,106 +149,128 @@ class TerraformResource:
                 attrs.append(f'  {key} = {json.dumps(value)}')
             elif isinstance(value, HClAttribute):
                 attrs.append(f'  {key} = {value.hcl_value}')
+            elif isinstance(value, AbstractTerraformResource):
+                attrs.append(f'  {key} = {value.get_address()}')
             else:
                 attrs.append(f'  {key} = {value}')
         
-        return f'resource "{self.resource_type}" "{self.name}" {{\n{chr(10).join(attrs)}\n}}'
+        return f'{self.hcl_resource_type} "{self.resource_type}" "{self.name}" {{\n{chr(10).join(attrs)}\n}}'
 
-    def to_import_command(self) -> Optional[str]:
-        if not self.id:
-            return None
-        return f'terraform import {self.resource_type}.{self.name} {self.id}'
+    def get_address(self):
+        return f"{self.hcl_resource_type}.{self.resource_type}.{self.name}.id"
+
+class TerraformResource(AbstractTerraformResource):
+    def __init__(self, resource_type: str, name: str, attributes: Dict) -> None:
+        super().__init__(resource_type, name, attributes, "resource")
+
+class TerraformDataSource(AbstractTerraformResource):
+    def __init__(self, resource_type: str, name: str, attributes: Dict) -> None:
+        super().__init__(resource_type, name, attributes, "data")
+
+
+def extract_resources(attrs_block: str) -> Dict:
+    attrs = {}
+
+    # Parse attributes from the block
+    for line in attrs_block.split('\n'):
+        line = line.strip()
+        if '=' in line:
+            key, value = line.split('=', 1)
+            key = key.strip()
+            value = value.strip()
+            # Handle string values
+            if value.startswith('"') and value.endswith('"'):
+                value = value[1:-1]
+            # Handle boolean values
+            elif value.lower() in ('true', 'false'):
+                value = value.lower() == 'true'
+            # Handle vcs_repo block
+            elif key.strip() == 'vcs_repo':
+                vcs_attrs = {}
+                vcs_block = re.search(r'vcs_repo\s*{([^}]+)}', attrs_block, re.DOTALL)
+                if vcs_block:
+                    for vcs_line in vcs_block.group(1).split('\n'):
+                        vcs_line = vcs_line.strip()
+                        if '=' in vcs_line:
+                            vcs_key, vcs_value = vcs_line.split('=', 1)
+                            vcs_key = vcs_key.strip()
+                            vcs_value = vcs_value.strip()
+                            if vcs_value.startswith('"') and vcs_value.endswith('"'):
+                                vcs_value = vcs_value[1:-1]
+                            elif vcs_value.lower() in ('true', 'false'):
+                                vcs_value = vcs_value.lower() == 'true'
+                            vcs_attrs[vcs_key] = vcs_value
+                attrs[key] = vcs_attrs
+                continue
+            attrs[key] = value
+    return attrs
 
 class ResourceManager:
     def __init__(self):
         self.resources: List[TerraformResource] = []
-        self.import_commands: List[str] = []
+        self.data_sources: List[TerraformDataSource] = []
         self.output_dir = "generated_terraform"
+        self._load_existing_data_sources()
         self._load_existing_resources()
-        self._load_existing_import_commands()
 
     def _load_existing_resources(self):
         """Load existing resources from main.tf if it exists."""
         main_tf_path = os.path.join(self.output_dir, "main.tf")
-        if os.path.exists(main_tf_path):
-            with open(main_tf_path, "r") as f:
-                content = f.read()
-                # Extract resource blocks using regex
-                import re
-                resource_pattern = r'resource\s+"([^"]+)"\s+"([^"]+)"\s*{([^}]+)}'
-                for match in re.finditer(resource_pattern, content, re.DOTALL):
-                    resource_type, name, attrs_block = match.groups()
-                    # Parse attributes from the block
-                    attrs = {}
-                    for line in attrs_block.split('\n'):
-                        line = line.strip()
-                        if '=' in line:
-                            key, value = line.split('=', 1)
-                            key = key.strip()
-                            value = value.strip()
-                            # Handle string values
-                            if value.startswith('"') and value.endswith('"'):
-                                value = value[1:-1]
-                            # Handle boolean values
-                            elif value.lower() in ('true', 'false'):
-                                value = value.lower() == 'true'
-                            # Handle vcs_repo block
-                            elif key.strip() == 'vcs_repo':
-                                vcs_attrs = {}
-                                vcs_block = re.search(r'vcs_repo\s*{([^}]+)}', attrs_block, re.DOTALL)
-                                if vcs_block:
-                                    for vcs_line in vcs_block.group(1).split('\n'):
-                                        vcs_line = vcs_line.strip()
-                                        if '=' in vcs_line:
-                                            vcs_key, vcs_value = vcs_line.split('=', 1)
-                                            vcs_key = vcs_key.strip()
-                                            vcs_value = vcs_value.strip()
-                                            if vcs_value.startswith('"') and vcs_value.endswith('"'):
-                                                vcs_value = vcs_value[1:-1]
-                                            elif vcs_value.lower() in ('true', 'false'):
-                                                vcs_value = vcs_value.lower() == 'true'
-                                            vcs_attrs[vcs_key] = vcs_value
-                                attrs[key] = vcs_attrs
-                            else:
-                                attrs[key] = value
-                    # Create resource with preserved attributes
-                    self.resources.append(TerraformResource(resource_type, name, attrs))
+        if not os.path.exists(main_tf_path):
+            return
 
-    def _load_existing_import_commands(self):
-        """Load existing import commands from import_commands.sh if it exists."""
-        import_script_path = os.path.join(self.output_dir, "import_commands.sh")
-        if os.path.exists(import_script_path):
-            with open(import_script_path, "r") as f:
-                content = f.read()
-                # Extract import commands using regex
-                import re
-                import_pattern = r'terraform import\s+([^\n]+)'
-                for match in re.finditer(import_pattern, content):
-                    self.import_commands.append(match.group(0))
+        regexp = r'resource\s+"([^"]+)"\s+"([^"]+)"\s*{([^}]+)}'
+
+        with open(main_tf_path, "r") as f:
+            for match in re.finditer(regexp, f.read(), re.DOTALL):
+                resource_type, name, attrs_block = match.groups()
+                self.resources.append(
+                    TerraformResource(resource_type, name, extract_resources(attrs_block))
+                )
+
+    def _load_existing_data_sources(self):
+        """Load existing resources from main.tf if it exists."""
+        main_tf_path = os.path.join(self.output_dir, "main.tf")
+        if not os.path.exists(main_tf_path):
+            return
+
+        regexp = r'data\s+"([^"]+)"\s+"([^"]+)"\s*{([^}]+)}'
+
+        with open(main_tf_path, "r") as f:
+            for match in re.finditer(regexp, f.read(), re.DOTALL):
+                resource_type, name, attrs_block = match.groups()
+                self.data_sources.append(
+                    TerraformDataSource(resource_type, name, extract_resources(attrs_block))
+                )
 
     def add_resource(self, resource: TerraformResource):
         """Add a resource if it doesn't already exist."""
         # Check if resource already exists
-        if self.has(resource.resource_type, resource.name):
+        if self.has_resource(resource.resource_type, resource.name):
             return
-        self.resources.append(resource)
-        if resource.id:
-            import_cmd = resource.to_import_command()
-            if import_cmd:
-                self.import_commands.append(import_cmd)
 
-    def has(self, type: str, name: str) -> bool:
+        self.resources.append(resource)
+
+    def add_data_source(self, data_source: TerraformDataSource):
+        """Add a resource if it doesn't already exist."""
+        # Check if resource already exists
+        if self.has_data_source(data_source.resource_type, data_source.name):
+            return
+        self.data_sources.append(data_source)
+
+    def has_resource(self, resource_type: str, name: str) -> bool:
         for existing in self.resources:
-            if existing.resource_type == type and existing.name == name:
+            if existing.resource_type == resource_type and existing.name == name:
                 return True
 
         return  False
 
-    def import_resource(self, existing_resources: set, resource_ref: str, resource_id: str) -> Optional[str]:
-        """Generate import command for a resource if it's not already imported."""
-        if resource_ref not in existing_resources:
-            return f"terraform import {resource_ref} {resource_id}"
-        return None
+    def has_data_source(self, resource_type: str, name: str) -> bool:
+        for existing in self.data_sources:
+            if existing.resource_type == resource_type and existing.name == name:
+                return True
+
+        return  False
 
     def write_resources(self, output_dir: str):
         os.makedirs(output_dir, exist_ok=True)
@@ -269,79 +299,30 @@ class ResourceManager:
             if file_exists:
                 with open(main_tf_path, "r") as existing:
                     content = existing.read()
-                    for resource in self.resources:
-                        pattern = f'resource "{resource.resource_type}" "{resource.name}"'
+                    for resource in (self.resources + self.data_sources):
+                        pattern = f'{resource.hcl_resource_type} "{resource.resource_type}" "{resource.name}"'
                         if pattern in content:
                             existing_resources.add((resource.resource_type, resource.name))
             
-            for resource in self.resources:
+            # Write resource blocks
+            for resource in (self.data_sources + self.resources):
                 if (resource.resource_type, resource.name) not in existing_resources:
                     f.write(resource.to_hcl() + "\n\n")
 
-        # Write import script
-        import_script_path = os.path.join(output_dir, "import_commands.sh")
-        
-        # Read existing commands if file exists
-        existing_commands = {}
-        if os.path.exists(import_script_path):
-            with open(import_script_path, "r") as f:
-                content = f.read()
-                import re
-                import_pattern = r'terraform import\s+([^\s]+)\s+([^\n]+)'
-                for match in re.finditer(import_pattern, content):
-                    resource_ref = match.group(1)  # e.g., scalr_workspace.ws_workspace_a
-                    resource_id = match.group(2)  # e.g., ws-v0oou23rpn1lke6kv
-                    existing_commands[resource_ref] = (resource_ref, resource_id)
-        
-        # Write all commands, including new ones
-        with open(import_script_path, "w") as f:
-            f.write("#!/bin/bash\n\n")
+        # Write imports.tf
+        imports_path = os.path.join(output_dir, "imports.tf")
+        with open(imports_path, "w") as f:
             f.write("# Generated by Scalr Migrator\n")
             f.write(f"# Generated at: {datetime.now().isoformat()}\n\n")
-            f.write("set -e\n\n")
+            f.write("# This file contains import blocks for resources.\n")
+            f.write("# You can safely remove this file after successful import.\n\n")
             
-            # Define import function
-            f.write('''import_resource() {
-  all_resources=$1
-  resource=$2
-  id=$3
-
-  if [ -z "$all_resources" ] || ! echo "$all_resources" | grep -q "^$resource$"; then
-    echo "Importing $resource..."
-    terraform import "$resource" "$id"
-  else
-    echo "Skipping $resource (already in state)"
-  fi
-}
-
-''')
-            
-            # Step 1: Initialize remote backend
-            f.write("echo 'Step 1: Initializing remote backend...'\n")
-            f.write("terraform init\n\n")
-            
-            # Step 2: Import new resources
-            f.write("echo 'Step 2: Importing new resources...'\n")
-            f.write("existing_resources=$(terraform state list 2>/dev/null || echo '')\n\n")
-            
-            # Add new commands, keeping only the latest for each resource
-            for cmd in self.import_commands:
-                parts = cmd.split()
-                if len(parts) >= 4:  # Ensure we have enough parts
-                    resource_ref = parts[2]  # Get the resource reference
-                    resource_id = parts[3]  # Get the resource ID
-                    existing_commands[resource_ref] = (resource_ref, resource_id)
-            
-            # Write import commands using the function
-            for resource_ref, resource_id in existing_commands.values():
-                f.write(f'import_resource "$existing_resources" "{resource_ref}" "{resource_id}"\n')
-            
-            f.write("\n")
-            # Step 3: Apply configuration
-            f.write("echo 'Step 3: Applying configuration...'\n")
-            f.write("terraform apply -auto-approve\n\n")
-            
-            f.write("echo 'Migration completed successfully!'\n")
+            for resource in self.resources:
+                if resource.id and (resource.resource_type, resource.name) not in existing_resources:
+                    f.write(f'import {{\n')
+                    f.write(f'  to = {resource.resource_type}.{resource.name}\n')
+                    f.write(f'  id = "{resource.id}"\n')
+                    f.write(f'}}\n\n')
 
 class APIClient:
     def __init__(self, hostname: str, token: str, api_version: str = "v2"):
@@ -413,7 +394,7 @@ class TFCClient(APIClient):
         return self.post(f"workspaces/{workspace_id}/actions/lock", {"reason": reason})
 
 class ScalrClient(APIClient):
-    def __init__(self, hostname: str, token: str, resource_manager: ResourceManager):
+    def __init__(self, hostname: str, token: str):
         super().__init__(hostname, token, "iacp/v3")
 
     def get_environment(self, name: str) -> Optional[Dict]:
@@ -537,31 +518,42 @@ def _enforce_max_version(tf_version: str, workspace_name) -> str:
         tf_version = MAX_TERRAFORM_VERSION
     return tf_version
 
+def get_workspace_resource_name(name: str) -> str:
+    return f"ws_{name.lower().replace('-', '_')}"
+
+def get_workspace_resource_id(name: str) -> str:
+    return f"scalr_workspace.{get_workspace_resource_name(name)}.id"
 
 class MigrationService:
     def __init__(self, args: MigratorArgs):
         self.args: MigratorArgs = args
         self.resource_manager: ResourceManager = ResourceManager()
         self.tfc: TFCClient = TFCClient(args.tf_hostname, args.tf_token)
-        self.scalr: ScalrClient = ScalrClient(args.scalr_hostname, args.scalr_token, self.resource_manager)
+        self.scalr: ScalrClient = ScalrClient(args.scalr_hostname, args.scalr_token)
 
     def get_environment_resource_name(self) -> str:
         return f"env_{self.args.scalr_environment.lower().replace('-', '_')}"
 
-    def get_environment_resource_id(self) -> Optional[HClAttribute]:
-        name = self.get_environment_resource_name()
-        if self.resource_manager.has("scalr_environment", name):
-            return HClAttribute(f"scalr_environment.{name}.id")
-
-        return None
+    def get_environment_resource_id(self) -> HClAttribute:
+        resource_name = self.get_environment_resource_name()
+        if self.resource_manager.has_resource("scalr_environment", resource_name):
+            return HClAttribute(f"scalr_environment.{resource_name}.id")
+        else:
+            return HClAttribute(f"data.scalr_environment.{resource_name}.id")
 
     def create_environment(self, name: str, skip_terraform: bool = False) -> Dict:
         """Get existing workspace or create a new one."""
         # First try to find existing environment
         environment = self.scalr.get_environment(name)
         if environment:
+            if not skip_terraform:
+                environment_data_source = TerraformDataSource(
+                    "scalr_environment",
+                    self.get_environment_resource_name(),
+                    {"name": name}
+                )
+                self.resource_manager.add_data_source(environment_data_source)
             return environment
-
 
         response = self.scalr.create_environment(name, self.args.account_id)["data"]
 
@@ -580,23 +572,24 @@ class MigrationService:
 
         return response
 
-    def get_workspace_resource_name(self, name: str) -> str:
-        return f"ws_{name.lower().replace('-', '_')}"
-
-    def get_workspace_resource_id(self, name: str) -> str:
-        return f"scalr_workspace.{self.get_workspace_resource_name(name)}.id"
-
     def get_management_workspace_attributes(self):
         return {"attributes": {
             "name": self.args.management_workspace_name,
-            "vcs-provider-id": self.args.vcs_id,
+            "vcs-provider-id": self.args.vcs_name,
             "terraform-version": MAX_TERRAFORM_VERSION,
             "auto-apply": False,
             "operations": True,
             "deletion-protection-enabled": not self.args.disable_deletion_protection,
         }}
 
-    def create_workspace(self, env_id: str, tf_workspace: Dict, skip_terraform_resource: Optional[bool] = False) -> Dict:
+    def create_workspace(
+        self,
+        env_id: str,
+        tf_workspace: Dict,
+        vcs_id: Optional[str] = None,
+        vcs_data: Optional[TerraformDataSource] = None,
+        skip_terraform_resource: Optional[bool] = False
+    ) -> Dict:
         attributes = tf_workspace["attributes"]
         """Get existing workspace or create a new one."""
         # First try to find existing workspace
@@ -634,20 +627,18 @@ class MigrationService:
             if attributes["vcs-repo"]["branch"]:
                 workspace_attrs["vcs-repo"]["branch"] = attributes["vcs-repo"]["branch"]
 
-        response = self.scalr.create_workspace(env_id, workspace_attrs, self.args.vcs_id if vcs_repo else None)
+        response = self.scalr.create_workspace(env_id, workspace_attrs, vcs_id if vcs_repo else None)
 
         if skip_terraform_resource:
             return response["data"]
 
-        environment_reference =self.get_environment_resource_id()
-
-        if not environment_reference:
-            environment_reference = env_id
+        if not vcs_data:
+            raise VCSMissingError('VCS Provider is required')
 
         # Create Terraform resource
         workspace_resource = TerraformResource(
             "scalr_workspace",
-            self.get_workspace_resource_name(attributes["name"]),
+            get_workspace_resource_name(attributes["name"]),
             {
                 "name": attributes["name"],
                 "auto_apply": attributes["auto-apply"],
@@ -659,8 +650,8 @@ class MigrationService:
                     "trigger_prefixes": attributes["trigger-prefixes"]
                 },
                 "working_directory": attributes["working-directory"],
-                "environment_id": environment_reference,
-                "vcs_provider_id": self.args.vcs_id,
+                "environment_id": self.get_environment_resource_id(),
+                "vcs_provider_id": vcs_data,
                 "deletion_protection_enabled": not self.args.disable_deletion_protection
             }
         )
@@ -702,7 +693,7 @@ class MigrationService:
 
         return self.scalr.create_state_version(workspace_id, state_attrs)
 
-    def create_backend_config(self, env_id: str, workspace_id: str) -> None:
+    def create_backend_config(self) -> None:
         """Create backend configuration for the management workspace."""
         backend_config = f'''terraform {{
   backend "remote" {{
@@ -722,11 +713,11 @@ class MigrationService:
             f.write(f"# Generated at: {datetime.now().isoformat()}\n\n")
             f.write(backend_config)
 
-    def migrate_workspace(self, tf_workspace: Dict, env: Dict) -> bool:
+    def migrate_workspace(self, tf_workspace: Dict, env: Dict, vcs_id: str, vcs_data: TerraformDataSource) -> bool:
         workspace_name = tf_workspace["attributes"]["name"]
         print(f"\nMigrating workspace {workspace_name} into {env['attributes']['name']}...")
 
-        workspace = self.create_workspace(env['id'], tf_workspace)
+        workspace = self.create_workspace(env['id'], tf_workspace, vcs_id=vcs_id, vcs_data=vcs_data)
 
         print(f"Migrating state into {workspace['attributes']['name']}...")
         self.create_state(tf_workspace, workspace["id"])
@@ -741,7 +732,7 @@ class MigrationService:
             }
         }
 
-        workspace_resource_id = self.get_workspace_resource_id(workspace_name)
+        workspace_resource_id = get_workspace_resource_id(workspace_name)
 
         for api_var in self.tfc.get_workspace_vars(self.args.tf_organization, workspace_name)["data"]:
             attributes = api_var["attributes"]
@@ -880,17 +871,24 @@ class MigrationService:
         else:
             print(f"Credentials for {self.args.scalr_hostname} already exist in {credentials_file}")
 
+    def get_vcs_provider_id(self) -> str:
+        vcs_provider = self.scalr.get("vcs-providers", {"query": self.args.vcs_name})["data"][0]
+        if not vcs_provider:
+            raise VCSMissingError(f"VCS provider with name '{self.args.vcs_name}' not found.")
+
+        return vcs_provider["id"]
+
     def migrate(self):
         self.init_backend_secrets()
         
         # Get organization and create environment
         organization = self.tfc.get_organization(self.args.tf_organization)["data"]
         if not self.args.scalr_environment:
-            self.args.scalr_environment = organization["name"]
+            self.args.scalr_environment = organization["attributes"]["name"]
 
         # Create management environment and workspace
         management_env = self.create_environment(self.args.management_env_name, True)
-        management_workspace = self.create_workspace(
+        self.create_workspace(
             management_env["id"],
             self.get_management_workspace_attributes(),
             skip_terraform_resource=True
@@ -902,11 +900,21 @@ class MigrationService:
 
         # Create backend configuration for the management workspace
         print("Creating backend configuration for management workspace...")
-        self.create_backend_config(management_env["id"], management_workspace["id"])
+        self.create_backend_config()
 
         # Migrate workspaces
         next_page = 1
         skipped_workspaces = []
+
+        vcs_id = self.get_vcs_provider_id()
+
+        vcs_data = TerraformDataSource(
+            "scalr_vcs_provider",
+            self.args.vcs_name,
+            {"name": self.args.vcs_name}
+        )
+        self.resource_manager.add_data_source(vcs_data)
+
         while True:
             tfc_workspaces = self.tfc.get_workspaces(self.args.tf_organization, next_page)
             next_page = tfc_workspaces["meta"]["pagination"]["next-page"]
@@ -923,7 +931,7 @@ class MigrationService:
                         skipped_workspaces.append(workspace_name)
                         continue
 
-                    result = self.migrate_workspace(tf_workspace, env)
+                    result = self.migrate_workspace(tf_workspace, env, vcs_id, vcs_data)
 
                     if not result:
                         skipped_workspaces.append(workspace_name)
@@ -931,7 +939,9 @@ class MigrationService:
 
                     print(f"Successfully migrated workspace {workspace_name}")
                 except Exception as e:
-                    print(f"Error migrating workspace {workspace_name}: {str(e)}. \nTraceback: {traceback.format_exc()}")
+                    print(f"Error migrating workspace {workspace_name}: {str(e)}.")
+                    if self.args.debug_enabled:
+                        print(f" \nTraceback: {traceback.format_exc()}")
                     skipped_workspaces.append(workspace_name)
                     continue
 
@@ -951,31 +961,18 @@ class MigrationService:
         print("\nNext steps to complete the migration:")
         print("1. Navigate to the generated_terraform directory:")
         print("   cd generated_terraform")
-        print("\n2. Make the import script executable and run it:")
-        print("   chmod +x import_commands.sh")
-        print("   ./import_commands.sh")
-        print("\nNote: The script will:")
-        print("   - Initialize a local backend")
-        print("   - Import all resources to the local state")
-        print("   - Migrate the state to the remote backend")
+        print("\n2. Initialize Terraform and apply the configuration:")
+        print("   terraform init")
+        print("   terraform plan  # Review the import operations")
+        print("   terraform apply -auto-approve")
+        print("\nNote: The configuration includes import blocks that will:")
+        print("   - Import all resources to the state")
+        print("   - Apply the configuration to match the imported resources")
         print("\nCredentials have been automatically configured in ~/.terraform.d/credentials.tfrc.json")
 
-    def is_resource_imported(self, resource_ref: str) -> bool:
-        """Check if a resource is already imported in the state."""
-        try:
-            result = subprocess.run(
-                ["terraform", "state", "list"],
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            return resource_ref in result.stdout.splitlines()
-        except subprocess.CalledProcessError:
-            return False
-
-def validate_vcs_id(args: argparse.Namespace) -> None:
-    if not args.skip_workspace_creation and not args.vcs_id:
-        print("Error: If --skip-workspace-creation flag is not set, a valid vcs_id must be passed.")
+def validate_vcs_name(args: argparse.Namespace) -> None:
+    if not args.skip_workspace_creation and not args.vcs_name:
+        print("Error: If --skip-workspace-creation flag is not set, a valid vcs_name must be passed.")
         sys.exit(1)
 
 def main():
@@ -987,7 +984,7 @@ def main():
     parser.add_argument('--tf-token', type=str, help='TFC/E token')
     parser.add_argument('--tf-organization', type=str, help='TFC/E organization name')
     parser.add_argument('-a', '--account-id', type=str, help='Scalr account')
-    parser.add_argument('-v', '--vcs-id', type=str, help='VCS identifier')
+    parser.add_argument('-v', '--vcs-name', type=str, help='VCS identifier')
     parser.add_argument('-w', '--workspaces', type=str, help='Workspaces to migrate. By default - all')
     parser.add_argument('--skip-workspace-creation', action='store_true', help='Whether to create new workspaces in Scalr. Set to True if the workspace is already created in Scalr.')
     parser.add_argument('--skip-backend-secrets', action='store_true', help='Whether to create shell variables (`SCALR_` and `TFC_`) in Scalr.')
@@ -1005,8 +1002,8 @@ def main():
         print(f"Error: Missing required arguments: {', '.join(missing_args)}")
         sys.exit(1)
     
-    # Validate vcs_id if needed
-    validate_vcs_id(args)
+    # Validate vcs_name if needed
+    validate_vcs_name(args)
 
     # Convert argparse namespace to MigratorArgs and run migration
     migrator_args = MigratorArgs.from_argparse(args)

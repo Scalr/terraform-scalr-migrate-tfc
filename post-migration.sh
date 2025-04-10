@@ -8,12 +8,8 @@ echo "Starting post-migration steps..."
 # Example: Navigate to the generated Terraform directory
 cd generated_terraform || exit 1
 
-# Example: Make import script executable
-chmod +x import_commands.sh
-
-# Example: Run import commands
-echo "Running import commands..."
-./import_commands.sh
+terraform init
+terraform apply
 
 # Example: Additional post-migration steps can be added here
 # - Clean up temporary files
