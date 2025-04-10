@@ -8,12 +8,12 @@ if ! command -v python3.12 &> /dev/null; then
     exit 1
 fi
 
-# Default values
-DEFAULT_MANAGEMENT_ENV_NAME="terraform-management"
-DEFAULT_MANAGEMENT_WORKSPACE_NAME="workspace-management"
-
 if [ -z "$TFC_HOSTNAME" ]; then
     export TFC_HOSTNAME="app.terraform.io"
+fi
+
+if [ -z "$SCALR_ENVIRONMENT" ]; then
+    export SCALR_ENVIRONMENT="$TFC_ORGANIZATION"
 fi
 
 # Function to read credentials from file
@@ -165,7 +165,7 @@ pip install -r requirements.txt
 CMD="python3 migrator.py"
 CMD="$CMD --scalr-hostname \"$SCALR_HOSTNAME\""
 CMD="$CMD --scalr-token \"$SCALR_TOKEN\""
-[ -n "$SCALR_ENVIRONMENT" ] && CMD="$CMD --scalr-environment \"$SCALR_ENVIRONMENT\""
+CMD="$CMD --scalr-environment \"$SCALR_ENVIRONMENT\""
 CMD="$CMD --tf-hostname \"$TFC_HOSTNAME\""
 CMD="$CMD --tf-token \"$TFC_TOKEN\""
 CMD="$CMD --tf-organization \"$TFC_ORGANIZATION\""
@@ -176,7 +176,6 @@ CMD="$CMD -a \"$SCALR_ACCOUNT_ID\""
 [ "$SKIP_BACKEND_SECRETS" = true ] && CMD="$CMD --skip-backend-secrets"
 [ "$LOCK" = true ] && CMD="$CMD -l"
 [ -n "$MANAGEMENT_ENV_NAME" ] && CMD="$CMD --management-env-name \"$MANAGEMENT_ENV_NAME\""
-[ -n "$MANAGEMENT_WORKSPACE_NAME" ] && CMD="$CMD --management-workspace-name \"$MANAGEMENT_WORKSPACE_NAME\""
 [ "$DISABLE_DELETION_PROTECTION" = true ] && CMD="$CMD --disable-deletion-protection"
 
 # Run the migrator
@@ -191,13 +190,23 @@ if [ $? -eq 0 ]; then
     echo "Migration completed successfully!"
     
     # Run post-migration script if it exists
-    if [ -f "post-migration.sh" ]; then
-        echo "Running post-migration steps..."
-        chmod +x post-migration.sh
-        ./post-migration.sh
-    else
-        echo "No post-migration script found. Skipping post-migration steps."
-    fi
+    echo "Starting post-migration steps..."
+
+    # Example: Navigate to the generated Terraform directory
+    cd "./generated-terraform/$SCALR_ENVIRONMENT" || exit 1
+
+    pwd
+
+    terraform init
+    terraform apply
+
+    # Example: Additional post-migration steps can be added here
+    # - Clean up temporary files
+    # - Update documentation
+    # - Send notifications
+    # - etc.
+
+    echo "Post-migration steps completed successfully!"
 else
     echo "Migration failed. Please check the errors above."
     exit 1

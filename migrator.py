@@ -89,8 +89,8 @@ class MigratorArgs:
     skip_workspace_creation: bool
     skip_backend_secrets: bool
     lock: bool
+    management_workspace_name: str
     management_env_name: str = DEFAULT_MANAGEMENT_ENV_NAME
-    management_workspace_name: str = DEFAULT_MANAGEMENT_WORKSPACE_NAME
     disable_deletion_protection: bool = False
     debug_enabled: bool = False
 
@@ -110,7 +110,7 @@ class MigratorArgs:
             skip_backend_secrets=args.skip_backend_secrets,
             lock=args.lock,
             management_env_name=args.management_env_name,
-            management_workspace_name=args.management_workspace_name,
+            management_workspace_name=f"{args.scalr_environment}",
             disable_deletion_protection=args.disable_deletion_protection
         )
 
@@ -206,10 +206,10 @@ def extract_resources(attrs_block: str) -> Dict:
     return attrs
 
 class ResourceManager:
-    def __init__(self):
+    def __init__(self, output_dir: str) -> None:
         self.resources: List[TerraformResource] = []
         self.data_sources: List[TerraformDataSource] = []
-        self.output_dir = "generated_terraform"
+        self.output_dir = output_dir
         self._load_existing_data_sources()
         self._load_existing_resources()
 
@@ -402,26 +402,20 @@ class ScalrClient(APIClient):
             response = self.get("environments", filters={"filter[name]": name})
             environments = response.get("data", [])
 
-            if environments:
-                return environments[0]
+            return environments[0] if environments else None
         except urllib.error.HTTPError as e:
             if e.code != 404:
                 raise
-
-        return None
 
     def get_workspace(self, environment_id, name: str) -> Optional[Dict]:
         try:
             response = self.get("workspaces", {"query": name, "filter[environment]": environment_id})
             workspaces = response.get("data", [])
 
-            if workspaces:
-                return workspaces[0]
+            return workspaces[0] if workspaces else None
         except urllib.error.HTTPError as e:
             if e.code != 404:
                 raise
-
-        return None
 
     def create_environment(self, name: str, account_id: str) -> Dict:
         data = {
@@ -527,7 +521,7 @@ def get_workspace_resource_id(name: str) -> str:
 class MigrationService:
     def __init__(self, args: MigratorArgs):
         self.args: MigratorArgs = args
-        self.resource_manager: ResourceManager = ResourceManager()
+        self.resource_manager: ResourceManager = ResourceManager(f"generated-terraform/{self.args.scalr_environment}")
         self.tfc: TFCClient = TFCClient(args.tf_hostname, args.tf_token)
         self.scalr: ScalrClient = ScalrClient(args.scalr_hostname, args.scalr_token)
 
@@ -545,27 +539,20 @@ class MigrationService:
         """Get existing workspace or create a new one."""
         # First try to find existing environment
         environment = self.scalr.get_environment(name)
+        env_resource_name = self.get_environment_resource_name()
+
         if environment:
             if not skip_terraform:
-                environment_data_source = TerraformDataSource(
-                    "scalr_environment",
-                    self.get_environment_resource_name(),
-                    {"name": name}
-                )
-                self.resource_manager.add_data_source(environment_data_source)
+                environment_data_source = TerraformDataSource("scalr_environment", env_resource_name,{"name": name})
+                if not self.resource_manager.has_resource("scalr_environment", env_resource_name):
+                    self.resource_manager.add_data_source(environment_data_source)
             return environment
 
         response = self.scalr.create_environment(name, self.args.account_id)["data"]
 
         if not skip_terraform:
             # Create Terraform resource
-            env_resource = TerraformResource(
-                "scalr_environment",
-                self.get_environment_resource_name(),
-                {
-                    "name": name,
-                },
-            )
+            env_resource = TerraformResource("scalr_environment", env_resource_name,{"name": name})
             env_resource.id = response["id"]
             self.resource_manager.add_resource(env_resource)
         print(f"Created environment '{name}'")
@@ -705,7 +692,7 @@ class MigrationService:
   }}
 }}
 '''
-        output_dir = "generated_terraform"
+        output_dir = self.resource_manager.output_dir
         os.makedirs(output_dir, exist_ok=True)
         
         with open(os.path.join(output_dir, "backend.tf"), "w") as f:
@@ -949,7 +936,9 @@ class MigrationService:
                 break
         print(f"Skipped {len(skipped_workspaces)} workspace(s): {', '.join(skipped_workspaces)}")
         # Write generated Terraform resources and import commands
-        output_dir = "generated_terraform"
+
+        output_dir = self.resource_manager.output_dir
+
         self.resource_manager.write_resources(output_dir)
         print(f"\nGenerated Terraform resources and import commands in directory: {output_dir}")
         print(f"Migrating organization {self.args.tf_organization} ({self.args.scalr_environment})... Done")
