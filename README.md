@@ -47,7 +47,7 @@ The tool supports multiple ways to provide authentication tokens:
 
 ### Environment variables:
 ```bash
-export SCALR_HOSTNAME="account.scalr.io"
+export SCALR_HOSTNAME="account.scalr.io" # Replace `account` with the actual account name
 export SCALR_TOKEN="your-token"
 export TFC_TOKEN="your-token"
 ./migrate.sh
