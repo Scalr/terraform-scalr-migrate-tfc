@@ -133,7 +133,7 @@ After successful migration, the tool will execute terraform apply and imports al
 
 ## Limitations
 
-- Maximum Terraform version is limited to 1.5.7
+- Supports up to Terrraform 1.5.7. If a higher version is used, the script will downgrade it to 1.5.7.
 - State migration requires at least one state file in the source TFC/E workspace.
 - Sensitive terraform variables migration requires at least one plan file in the source TFC/E workspace.
 - Sensitive environment variables are not migrated
