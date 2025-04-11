@@ -66,27 +66,26 @@ show_help() {
     echo "Migrate workspaces from TFC/E to Scalr"
     echo ""
     echo "Required options:"
-    echo "  --scalr-hostname HOSTNAME         Scalr hostname"
-    echo "  --scalr-token TOKEN               Scalr token"
-    echo "  --tf-hostname HOSTNAME            TFC/E hostname"
-    echo "  --tf-token TOKEN                  TFC/E token"
-    echo "  --tf-organization ORG             TFC/E organization name"
+    echo "  --scalr-hostname HOSTNAME   Scalr hostname"
+    echo "  --scalr-token TOKEN         Scalr token"
+    echo "  --tfc-hostname HOSTNAME     TFC/E hostname"
+    echo "  --tfc-token TOKEN           TFC/E token"
+    echo "  --tfc-organization ORG      TFC/E organization name"
     echo ""
     echo "Optional options:"
+    echo "  --tfc-project PROJECT             TFC project name to filter workspaces by"
     echo "  --scalr-environment ENV           Scalr environment to create (default: TFC/E organization name)"
-    echo "  --vcs-name NAME                   VCS identifier"
+    echo "  --vcs-name NAME                   VCS identifier. Required for creation VCS-driven workspaces."
     echo "  --workspaces PATTERN              Workspaces to migrate (default: all)"
     echo "  --skip-workspace-creation         Skip creating new workspaces in Scalr"
     echo "  --skip-backend-secrets            Skip creating shell variables in Scalr"
     echo "  --skip-tfc-lock                   Skip locking of the TFC/E workspaces after migration"
-    echo "  --management-env-name NAME        Name of the management environment (default: terraform-management)"
-    echo "  --management-workspace-name NAME  Name of the management workspace (default: workspace-management)"
-    echo "  --disable-deletion-protection     Disable deletion protection in workspace resources"
-    echo "  --tfc-project PROJECT             TFC project name to filter workspaces by"
+    echo "  --management-env-name NAME        Name of the management environment (default: scalr-admin)"
+    echo "  --disable-deletion-protection     Disable deletioyesn protection in workspace resources"
     echo "  --help                            Show this help message"
     echo ""
     echo "Example:"
-    echo "  $0 --scalr-hostname app.scalr.io --scalr-token token --tf-hostname app.terraform.io --tf-token token --tf-organization org --vcs-name vcs"
+    echo "  $0 --scalr-hostname app.scalr.io --scalr-token token --tfc-hostname app.terraform.io --tfc-token token --tfc-organization org --vcs-name vcs"
 }
 
 # Parse command line arguments
@@ -109,15 +108,15 @@ while [[ $# -gt 0 ]]; do
             SCALR_ENVIRONMENT="$2"
             shift 2
             ;;
-        --tf-hostname)
+        --tfc-hostname)
             TFC_HOSTNAME="$2"
             shift 2
             ;;
-        --tf-token)
+        --tfc-token)
             TFC_TOKEN="$2"
             shift 2
             ;;
-        --tf-organization)
+        --tfc-organization)
             TFC_ORGANIZATION="$2"
             shift 2
             ;;
@@ -172,27 +171,32 @@ MANAGEMENT_ENV_NAME=${MANAGEMENT_ENV_NAME:-$DEFAULT_MANAGEMENT_ENV_NAME}
 if [ -z "$SCALR_ENVIRONMENT" ]; then
     export SCALR_ENVIRONMENT=${TFC_PROJECT:-$TFC_ORGANIZATION}
 fi
+
+install_dependencies=false
 # Create and activate virtual environment
 if [ ! -d "venv" ]; then
     echo "Creating virtual environment..."
     python3.12 -m venv venv
+    install_dependencies=true
 fi
 
 echo "Activating virtual environment..."
 source venv/bin/activate
 
-# Install dependencies
-echo "Installing dependencies..."
-pip install -r requirements.txt
+# Install dependencies only on first execution
+if [ "$install_dependencies" = true ]; then
+    echo "Installing dependencies..."
+    pip install -r requirements.txt
+fi
 
 # Build the command
 CMD="python3 migrator.py"
 CMD="$CMD --scalr-hostname \"$SCALR_HOSTNAME\""
 CMD="$CMD --scalr-token \"$SCALR_TOKEN\""
 CMD="$CMD --scalr-environment \"$SCALR_ENVIRONMENT\""
-CMD="$CMD --tf-hostname \"$TFC_HOSTNAME\""
-CMD="$CMD --tf-token \"$TFC_TOKEN\""
-CMD="$CMD --tf-organization \"$TFC_ORGANIZATION\""
+CMD="$CMD --tfc-hostname \"$TFC_HOSTNAME\""
+CMD="$CMD --tfc-token \"$TFC_TOKEN\""
+CMD="$CMD --tfc-organization \"$TFC_ORGANIZATION\""
 [ -n "$SCALR_VCS_NAME" ] && CMD="$CMD -v \"$SCALR_VCS_NAME\""
 [ -n "$WORKSPACES" ] && CMD="$CMD -w \"$WORKSPACES\""
 [ "$SKIP_WORKSPACE_CREATION" = true ] && CMD="$CMD --skip-workspace-creation"

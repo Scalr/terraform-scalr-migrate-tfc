@@ -40,19 +40,23 @@ chmod +x migrate.sh
 
 The tool supports multiple ways to provide authentication tokens:
 
-1. Command line arguments:
+### Command line arguments:
 ```bash
-./migrate.sh --scalr-token "your-token" --tf-token "your-token"
+./migrate.sh --scalr-hostname "account.scalr.io" --scalr-token "your-token" --tfc-token "your-token"
 ```
 
-2. Environment variables:
+### Environment variables:
 ```bash
+export SCALR_HOSTNAME="account.scalr.io"
 export SCALR_TOKEN="your-token"
-export TF_TOKEN="your-token"
+export TFC_TOKEN="your-token"
 ./migrate.sh
 ```
 
-3. Terraform credentials file (`~/.terraform.d/credentials.tfrc.json`):
+### Terraform credentials file (`~/.terraform.d/credentials.tfrc.json`):
+
+When Scalr hostname is know (via parameter  `--scalr-hostname` or `SCALR_HOSTNAME`), the migrator can read the token from locally cached credentials file (usually written by the `terraform login` command).
+
 ```json
 {
   "credentials": {
@@ -66,23 +70,38 @@ export TF_TOKEN="your-token"
 }
 ```
 
+To use this auth method run two commands first:
+
+Cache TFC token:
+
+```shell
+terraform login
+```
+
+Cache Scalr token (replace `account` with the actual account name):
+```shell
+terraform login account.scalr.io
+```
+
 ## Usage
 
 ### Basic Usage
 
 ```bash
-./migrate.sh --tf-organization "my-org"
+./migrate.sh --tfc-organization "my-org"
 ```
 
 ### Advanced Options
 
+Migrates all production workspaces of dedicated project into separate production Scalr environment:
+
 ```bash
 ./migrate.sh \
-  --scalr-hostname "account.scalr.io" \
-  --tf-hostname "app.terraform.io" \
-  --tf-organization "my-org" \
+  --tfc-organization "my-org" \
+  --tfc-project "my-project" \
   --workspaces "prod-*" \
-  --management-env-name "terraform-management"
+  --scalr-environment "my-project-prod" \
+  --management-env-name "scalr-administration"
 ```
 
 ### Available Options
@@ -90,16 +109,16 @@ export TF_TOKEN="your-token"
 - `--scalr-hostname`: Scalr hostname (default: account.scalr.io)
 - `--scalr-token`: Scalr token
 - `--scalr-environment`: Scalr environment (optional)
-- `--tf-hostname`: TFC/E hostname (default: app.terraform.io)
-- `--tf-token`: TFC/E token
-- `--tf-organization`: TFC/E organization name
+- `--tfc-hostname`: TFC/E hostname (default: app.terraform.io)
+- `--tfc-token`: TFC/E token
+- `--tfc-organization`: TFC/E organization name
+- `--tfc-project`: TFC/E project name
 - `--vcs-name`: VCS Provider name
 - `--workspaces`: Workspaces to migrate (default: *)
 - `--skip-workspace-creation`: Skip workspace creation in Scalr, state migration will be performed only
 - `--skip-backend-secrets`: Skip Scalr/TFE secrets creation
 - `--skip-tfc-lock`: Skip locking of TFC/E workspaces. By default, workspaces are locked after migration to prevent state conflicts.
 - `--management-env-name`: Management environment name in which the generated code will be exported
-- `--management-workspace-name`: Management workspace name in which the generated code will be exported
 
 ## Generated Files
 

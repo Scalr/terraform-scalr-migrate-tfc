@@ -22,8 +22,7 @@ if sys.version_info < (3, 12):
 
 # Constants
 MAX_TERRAFORM_VERSION = "1.5.7"
-DEFAULT_MANAGEMENT_ENV_NAME = "terraform-management"
-DEFAULT_MANAGEMENT_WORKSPACE_NAME = "workspace-management"
+DEFAULT_MANAGEMENT_ENV_NAME = "scalr-admin"
 RATE_LIMIT_DELAY = 5  # seconds
 MAX_RETRIES = 3
 
@@ -80,9 +79,9 @@ class MigratorArgs:
     scalr_hostname: str
     scalr_token: str
     scalr_environment: Optional[str]
-    tf_hostname: str
-    tf_token: str
-    tf_organization: str
+    tfc_hostname: str
+    tfc_token: str
+    tfc_organization: str
     vcs_name: Optional[str]
     workspaces: str
     skip_workspace_creation: bool
@@ -101,9 +100,10 @@ class MigratorArgs:
             scalr_hostname=args.scalr_hostname,
             scalr_token=args.scalr_token,
             scalr_environment=args.scalr_environment,
-            tf_hostname=args.tf_hostname,
-            tf_token=args.tf_token,
-            tf_organization=args.tf_organization,
+            tfc_hostname=args.tfc_hostname,
+            tfc_token=args.tfc_token,
+            tfc_organization=args.tfc_organization,
+            tfc_project=args.tfc_project,
             vcs_name=args.vcs_name,
             workspaces=args.workspaces or "*",
             skip_workspace_creation=args.skip_workspace_creation,
@@ -112,7 +112,6 @@ class MigratorArgs:
             management_env_name=args.management_env_name,
             management_workspace_name=f"{args.scalr_environment}",
             disable_deletion_protection=args.disable_deletion_protection,
-            tfc_project=args.tfc_project
         )
 
 class HClAttribute:
@@ -616,7 +615,7 @@ class MigrationService:
     def __init__(self, args: MigratorArgs):
         self.args: MigratorArgs = args
         self.resource_manager: ResourceManager = ResourceManager(f"generated-terraform/{self.args.scalr_environment}")
-        self.tfc: TFCClient = TFCClient(args.tf_hostname, args.tf_token)
+        self.tfc: TFCClient = TFCClient(args.tfc_hostname, args.tfc_token)
         self.scalr: ScalrClient = ScalrClient(args.scalr_hostname, args.scalr_token)
         self.environment_resource_id: Optional[AbstractTerraformResource] = None
         self.project_id: Optional[str] = None
@@ -661,9 +660,9 @@ class MigrationService:
             return None
 
         if not self.project_id:
-            project = self.tfc.get_project(self.args.tf_organization, self.args.tfc_project)
+            project = self.tfc.get_project(self.args.tfc_organization, self.args.tfc_project)
             if not project:
-                ConsoleOutput.warning(f"Project '{self.args.tfc_project}' not found in organization '{self.args.tf_organization}'")
+                ConsoleOutput.warning(f"Project '{self.args.tfc_project}' not found in organization '{self.args.tfc_organization}'")
                 return None
             self.project_id = project["id"]
             ConsoleOutput.info(f"Found project '{self.args.tfc_project}' with ID: '{self.project_id}'")
@@ -890,7 +889,7 @@ class MigrationService:
 
         skipped_sensitive_vars = {}
 
-        for api_var in self.tfc.get_workspace_vars(self.args.tf_organization, workspace_name)["data"]:
+        for api_var in self.tfc.get_workspace_vars(self.args.tfc_organization, workspace_name)["data"]:
             attributes = api_var["attributes"]
             var_key: str = attributes["key"]
 
@@ -1015,8 +1014,8 @@ class MigrationService:
         vars_to_create = {
             "SCALR_HOSTNAME": self.args.scalr_hostname,
             "SCALR_TOKEN": self.args.scalr_token,
-            "TFE_HOSTNAME": self.args.tf_hostname,
-            "TFE_TOKEN": self.args.tf_token,
+            "TFE_HOSTNAME": self.args.tfc_hostname,
+            "TFE_TOKEN": self.args.tfc_token,
         }
 
         for key in vars_to_create:
@@ -1033,6 +1032,7 @@ class MigrationService:
                     vars_to_create[key],
                     "shell",
                     True,
+                    False,
                     "Created by migrator",
                     account_relationships
                 )
@@ -1084,7 +1084,7 @@ class MigrationService:
         self.init_backend_secrets()
 
         # Get organization and create environment
-        tf_organization = self.args.tf_organization
+        tf_organization = self.args.tfc_organization
         organization = self.tfc.get_organization(tf_organization)["data"]
         if not self.args.scalr_environment:
             self.args.scalr_environment = organization["attributes"]["name"]
@@ -1208,23 +1208,22 @@ def main():
     parser.add_argument('--scalr-hostname', type=str, help='Scalr hostname')
     parser.add_argument('--scalr-token', type=str, help='Scalr token')
     parser.add_argument('--scalr-environment', type=str, help='Optional. Scalr environment to create. By default it takes TFC/E organization name.')
-    parser.add_argument('--tf-hostname', type=str, help='TFC/E hostname')
-    parser.add_argument('--tf-token', type=str, help='TFC/E token')
-    parser.add_argument('--tf-organization', type=str, help='TFC/E organization name')
+    parser.add_argument('--tfc-hostname', type=str, help='TFC/E hostname')
+    parser.add_argument('--tfc-token', type=str, help='TFC/E token')
+    parser.add_argument('--tfc-organization', type=str, help='TFC/E organization name')
     parser.add_argument('-v', '--vcs-name', type=str, help='VCS identifier')
     parser.add_argument('-w', '--workspaces', type=str, help='Workspaces to migrate. By default - all')
     parser.add_argument('--skip-workspace-creation', action='store_true', help='Whether to create new workspaces in Scalr. Set to True if the workspace is already created in Scalr.')
     parser.add_argument('--skip-backend-secrets', action='store_true', help='Whether to create shell variables (`SCALR_` and `TFC_`) in Scalr.')
     parser.add_argument('--skip-tfc-lock', action='store_true', help='Whether to skip locking of TFC/E workspaces')
     parser.add_argument('--management-env-name', type=str, default=DEFAULT_MANAGEMENT_ENV_NAME, help=f'Name of the management environment. Default: {DEFAULT_MANAGEMENT_ENV_NAME}')
-    parser.add_argument('--management-workspace-name', type=str, default=DEFAULT_MANAGEMENT_WORKSPACE_NAME, help=f'Name of the management workspace. Default: {DEFAULT_MANAGEMENT_WORKSPACE_NAME}')
     parser.add_argument('--disable-deletion-protection', action='store_true', help='Disable deletion protection in workspace resources. Default: enabled')
     parser.add_argument('--tfc-project', type=str, help='TFC project name to filter workspaces by')
 
     args = parser.parse_args()
     
     # Validate required arguments
-    required_args = ['scalr_hostname', 'scalr_token', 'tf_hostname', 'tf_token', 'tf_organization']
+    required_args = ['scalr_hostname', 'scalr_token', 'tfc_hostname', 'tfc_token', 'tfc_organization']
     missing_args = [arg for arg in required_args if not getattr(args, arg)]
     if missing_args:
         ConsoleOutput.error(f"Missing required arguments: {', '.join(missing_args)}")
