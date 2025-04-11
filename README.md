@@ -4,7 +4,6 @@ This tool helps migrate workspaces from Terraform Cloud/Enterprise (TFC/E) to Sc
 - Workspace configurations
 - State files
 - Variables
-- VCS connections
 
 ## Features
 
@@ -15,7 +14,6 @@ This tool helps migrate workspaces from Terraform Cloud/Enterprise (TFC/E) to Sc
 - Creates a management environment and workspace in Scalr
 - Generates Terraform resources and import commands
 - Supports wildcard workspace selection
-- Handles credentials from multiple sources
 
 ## Prerequisites
 
@@ -35,7 +33,7 @@ cd terraform-scalr-migrate-tfc
 
 2. Make the scripts executable:
 ```bash
-chmod +x migrate.sh post-migration.sh
+chmod +x migrate.sh
 ```
 
 ## Authentication
@@ -73,7 +71,7 @@ export TF_TOKEN="your-token"
 ### Basic Usage
 
 ```bash
-./migrate.sh --tf-organization "my-org" --account-id "my-account"
+./migrate.sh --tf-organization "my-org"
 ```
 
 ### Advanced Options
@@ -83,10 +81,8 @@ export TF_TOKEN="your-token"
   --scalr-hostname "account.scalr.io" \
   --tf-hostname "app.terraform.io" \
   --tf-organization "my-org" \
-  --account-id "my-account" \
   --workspaces "prod-*" \
-  --management-env-name "terraform-management" \
-  --management-workspace-name "workspace-management"
+  --management-env-name "terraform-management"
 ```
 
 ### Available Options
@@ -97,35 +93,32 @@ export TF_TOKEN="your-token"
 - `--tf-hostname`: TFC/E hostname (default: app.terraform.io)
 - `--tf-token`: TFC/E token
 - `--tf-organization`: TFC/E organization name
-- `--account-id`: Scalr account ID
-- `--vcs-id`: VCS identifier
+- `--vcs-name`: VCS Provider name
 - `--workspaces`: Workspaces to migrate (default: *)
-- `--skip-workspace-creation`: Skip workspace creation in Scalr
-- `--skip-backend-secrets`: Skip backend secrets creation
-- `--lock`: Lock TFE workspaces
-- `--management-env-name`: Management environment name
-- `--management-workspace-name`: Management workspace name
-
-### Post-Migration
-
-After successful migration, the tool will:
-1. Generate Terraform resources in the `generated_terraform` directory
-2. Create import commands in `import_commands.sh`
-3. Execute post-migration steps if `post-migration.sh` exists
+- `--skip-workspace-creation`: Skip workspace creation in Scalr, state migration will be performed only
+- `--skip-backend-secrets`: Skip Scalr/TFE secrets creation
+- `--skip-tfc-lock`: Skip locking of TFC/E workspaces. By default, workspaces are locked after migration to prevent state conflicts.
+- `--management-env-name`: Management environment name in which the generated code will be exported
+- `--management-workspace-name`: Management workspace name in which the generated code will be exported
 
 ## Generated Files
 
-The tool generates the following files in the `generated_terraform` directory:
+The tool generates the following files in the `generated-terraform/$SCALR_ENVIRONMENT` directory:
 
 - `main.tf`: Contains all Terraform resources
 - `backend.tf`: Remote backend configuration
 - `import_commands.sh`: Script to import resources and push state
 
+### Post-Migration
+
+After successful migration, the tool will execute terraform apply and imports all previously created resources in the management workspace state file.
+
 ## Limitations
 
 - Maximum Terraform version is limited to 1.5.7
-- Workspaces without VCS connections are skipped
-- State migration requires at least one successful run in the source workspace
+- State migration requires at least one state file in the source TFC/E workspace.
+- Sensitive terraform variables migration requires at least one plan file in the source TFC/E workspace.
+- Sensitive environment variables are not migrationed
 
 ## Troubleshooting
 
@@ -135,7 +128,6 @@ The tool generates the following files in the `generated_terraform` directory:
    - Ensure you have the necessary permissions
 
 2. If state migration fails:
-   - Verify the source workspace has at least one successful run
    - Check if the workspace has a valid state file
    - Ensure you have sufficient permissions in both platforms
 

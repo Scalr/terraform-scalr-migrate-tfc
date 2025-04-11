@@ -8,14 +8,6 @@ if ! command -v python3.12 &> /dev/null; then
     exit 1
 fi
 
-if [ -z "$TFC_HOSTNAME" ]; then
-    export TFC_HOSTNAME="app.terraform.io"
-fi
-
-if [ -z "$SCALR_ENVIRONMENT" ]; then
-    export SCALR_ENVIRONMENT="$TFC_ORGANIZATION"
-fi
-
 # Function to read credentials from file
 read_tfrc_credentials() {
     local credentials_file="$HOME/.terraform.d/credentials.tfrc.json"
@@ -25,7 +17,11 @@ read_tfrc_credentials() {
         if [ "$scalr_token" != "null" ]; then
             export SCALR_TOKEN="$scalr_token"
         fi
-        
+
+        if [ -z "$TFC_HOSTNAME" ]; then
+          export TFC_HOSTNAME="app.terraform.io"
+        fi
+
         # Read TFC token
         local tfc_token=$(jq -r ".credentials.\"$TFC_HOSTNAME\".token" "$credentials_file" 2>/dev/null)
         if [ "$tfc_token" != "null" ]; then
@@ -54,10 +50,6 @@ validate_required_params() {
         missing_params+=("TFC_ORGANIZATION")
     fi
     
-    if [ -z "$SCALR_ACCOUNT_ID" ]; then
-        missing_params+=("SCALR_ACCOUNT_ID")
-    fi
-    
     if [ ${#missing_params[@]} -ne 0 ]; then
         echo "Error: Missing required parameters: ${missing_params[*]}"
         echo "Please provide these parameters either through:"
@@ -68,9 +60,43 @@ validate_required_params() {
     fi
 }
 
+# Function to display help
+show_help() {
+    echo "Usage: $0 [OPTIONS]"
+    echo "Migrate workspaces from TFC/E to Scalr"
+    echo ""
+    echo "Required options:"
+    echo "  --scalr-hostname HOSTNAME         Scalr hostname"
+    echo "  --scalr-token TOKEN               Scalr token"
+    echo "  --tf-hostname HOSTNAME            TFC/E hostname"
+    echo "  --tf-token TOKEN                  TFC/E token"
+    echo "  --tf-organization ORG             TFC/E organization name"
+    echo ""
+    echo "Optional options:"
+    echo "  --scalr-environment ENV           Scalr environment to create (default: TFC/E organization name)"
+    echo "  --vcs-name NAME                   VCS identifier"
+    echo "  --workspaces PATTERN              Workspaces to migrate (default: all)"
+    echo "  --skip-workspace-creation         Skip creating new workspaces in Scalr"
+    echo "  --skip-backend-secrets            Skip creating shell variables in Scalr"
+    echo "  --skip-tfc-lock                   Skip locking of the TFC/E workspaces after migration"
+    echo "  --management-env-name NAME        Name of the management environment (default: terraform-management)"
+    echo "  --management-workspace-name NAME  Name of the management workspace (default: workspace-management)"
+    echo "  --disable-deletion-protection     Disable deletion protection in workspace resources"
+    echo "  --tfc-project PROJECT             TFC project name to filter workspaces by"
+    echo "  --help                            Show this help message"
+    echo ""
+    echo "Example:"
+    echo "  $0 --scalr-hostname app.scalr.io --scalr-token token --tf-hostname app.terraform.io --tf-token token --tf-organization org --vcs-name vcs"
+}
+
 # Parse command line arguments
+ARGS=()
 while [[ $# -gt 0 ]]; do
-    case $1 in
+    case "$1" in
+        --help)
+            show_help
+            exit 0
+            ;;
         --scalr-hostname)
             SCALR_HOSTNAME="$2"
             shift 2
@@ -95,11 +121,7 @@ while [[ $# -gt 0 ]]; do
             TFC_ORGANIZATION="$2"
             shift 2
             ;;
-        -a|--account-id)
-            SCALR_ACCOUNT_ID="$2"
-            shift 2
-            ;;
-        -v|--vcs-id)
+        -v|--vcs-name)
             SCALR_VCS_NAME="$2"
             shift 2
             ;;
@@ -115,21 +137,21 @@ while [[ $# -gt 0 ]]; do
             SKIP_BACKEND_SECRETS=true
             shift
             ;;
-        -l|--lock)
-            LOCK=true
+        -l|--skip-tfc-lock)
+            SKIP_TFC_LOCK=true
             shift
             ;;
         --management-env-name)
             MANAGEMENT_ENV_NAME="$2"
             shift 2
             ;;
-        --management-workspace-name)
-            MANAGEMENT_WORKSPACE_NAME="$2"
-            shift 2
-            ;;
         --disable-deletion-protection)
             DISABLE_DELETION_PROTECTION=true
             shift
+            ;;
+        --tfc-project)
+            TFC_PROJECT="$2"
+            shift 2
             ;;
         *)
             echo "Unknown option: $1"
@@ -146,8 +168,10 @@ validate_required_params
 
 # Set default values if not provided
 MANAGEMENT_ENV_NAME=${MANAGEMENT_ENV_NAME:-$DEFAULT_MANAGEMENT_ENV_NAME}
-MANAGEMENT_WORKSPACE_NAME=${MANAGEMENT_WORKSPACE_NAME:-$DEFAULT_MANAGEMENT_WORKSPACE_NAME}
 
+if [ -z "$SCALR_ENVIRONMENT" ]; then
+    export SCALR_ENVIRONMENT=${TFC_PROJECT:-$TFC_ORGANIZATION}
+fi
 # Create and activate virtual environment
 if [ ! -d "venv" ]; then
     echo "Creating virtual environment..."
@@ -169,14 +193,14 @@ CMD="$CMD --scalr-environment \"$SCALR_ENVIRONMENT\""
 CMD="$CMD --tf-hostname \"$TFC_HOSTNAME\""
 CMD="$CMD --tf-token \"$TFC_TOKEN\""
 CMD="$CMD --tf-organization \"$TFC_ORGANIZATION\""
-CMD="$CMD -a \"$SCALR_ACCOUNT_ID\""
 [ -n "$SCALR_VCS_NAME" ] && CMD="$CMD -v \"$SCALR_VCS_NAME\""
 [ -n "$WORKSPACES" ] && CMD="$CMD -w \"$WORKSPACES\""
 [ "$SKIP_WORKSPACE_CREATION" = true ] && CMD="$CMD --skip-workspace-creation"
 [ "$SKIP_BACKEND_SECRETS" = true ] && CMD="$CMD --skip-backend-secrets"
-[ "$LOCK" = true ] && CMD="$CMD -l"
+[ "$SKIP_TFC_LOCK" = true ] && CMD="$CMD --skip-tfc-lock"
 [ -n "$MANAGEMENT_ENV_NAME" ] && CMD="$CMD --management-env-name \"$MANAGEMENT_ENV_NAME\""
 [ "$DISABLE_DELETION_PROTECTION" = true ] && CMD="$CMD --disable-deletion-protection"
+[ -n "$TFC_PROJECT" ] && CMD="$CMD --tfc-project \"$TFC_PROJECT\""
 
 # Run the migrator
 echo "Running migrator..."
@@ -199,12 +223,6 @@ if [ $? -eq 0 ]; then
 
     terraform init
     terraform apply
-
-    # Example: Additional post-migration steps can be added here
-    # - Clean up temporary files
-    # - Update documentation
-    # - Send notifications
-    # - etc.
 
     echo "Post-migration steps completed successfully!"
 else
