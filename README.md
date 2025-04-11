@@ -42,7 +42,7 @@ The tool supports multiple ways to provide authentication tokens:
 
 ### Command line arguments:
 ```bash
-./migrate.sh --scalr-hostname "account.scalr.io" --scalr-token "your-token" --tfc-token "your-token"
+./migrate.sh --tfc-token "your-token" --tfc-organization="my-org" --scalr-hostname "account.scalr.io" --scalr-token "your-token"
 ```
 
 ### Environment variables:
@@ -50,7 +50,6 @@ The tool supports multiple ways to provide authentication tokens:
 export SCALR_HOSTNAME="account.scalr.io" # Replace `account` with the actual account name
 export SCALR_TOKEN="your-token"
 export TFC_TOKEN="your-token"
-./migrate.sh
 ```
 
 ### Terraform credentials file (`~/.terraform.d/credentials.tfrc.json`):
@@ -88,7 +87,7 @@ terraform login account.scalr.io
 ### Basic Usage
 
 ```bash
-./migrate.sh --tfc-organization "my-org"
+./migrate.sh --tfc-organization "my-org" --scalr-hostname "account.scalr.io"
 ```
 
 ### Advanced Options
@@ -137,7 +136,7 @@ After successful migration, the tool will execute terraform apply and imports al
 - Maximum Terraform version is limited to 1.5.7
 - State migration requires at least one state file in the source TFC/E workspace.
 - Sensitive terraform variables migration requires at least one plan file in the source TFC/E workspace.
-- Sensitive environment variables are not migrationed
+- Sensitive environment variables are not migrated
 
 ## Troubleshooting
 
