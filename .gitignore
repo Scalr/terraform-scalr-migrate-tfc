@@ -33,4 +33,4 @@ override.tf.json
 *.idea/
 *.vscode/
 venv
-generated_terraform
+generated-terraform/
