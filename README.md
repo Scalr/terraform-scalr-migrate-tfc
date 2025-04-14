@@ -7,7 +7,22 @@ This tool helps migrate workspaces from Terraform Cloud/Enterprise (TFC/E) to Sc
 
 ## Features
 
-- Migrates workspaces with all their configurations
+- Migrates workspaces from Terraform Cloud/Enterprise to Scalr
+- Preserves workspace configurations, including:
+  - VCS settings and trigger patterns
+  - Terraform version
+  - Execution mode (remote/local)
+  - Working directory
+  - Auto-apply settings
+  - Remote state sharing
+  - Variable values (including sensitive ones when available)
+- Handles workspace dependencies and remote state consumers
+- Generates Terraform configuration for the migrated resources
+- Supports workspace filtering using glob patterns
+- Automatically configures Terraform credentials
+- Creates a management workspace for state management
+- Supports project-based workspace filtering
+- Properly handles multiline trigger patterns using heredoc (EOT) format
 - Preserves state history
 - Handles sensitive and non-sensitive variables
 - Supports workspace locking

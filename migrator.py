@@ -146,14 +146,28 @@ class AbstractTerraformResource:
                 for repo_key, repo_value in value.items():
                     if repo_value is not None:  # Skip None values
                         if isinstance(repo_value, str):
-                            attrs.append(f'    {repo_key} = "{repo_value}"')
+                            # Special handling for trigger_patterns
+                            if repo_key == "trigger_patterns" and '\n' in repo_value:
+                                attrs.append(f'    {repo_key} = <<EOT')
+                                attrs.extend(f'      {line}' for line in repo_value.split('\n'))
+                                attrs.append('    EOT')
+                            else:
+                                attrs.append(f'    {repo_key} = "{repo_value}"')
                         elif isinstance(repo_value, bool):
                             attrs.append(f'    {repo_key} = {str(repo_value).lower()}')
                         elif isinstance(repo_value, list):
                             attrs.append(f'    {repo_key} = {json.dumps(repo_value)}')
                 attrs.append("  }")
             elif isinstance(value, str):
-                attrs.append(f'  {key} = "{value}"')
+                # Check if the value contains newlines and use EOT format if it does
+                if '\n' in value:
+                    # Split the value into lines and indent each line
+                    lines = value.split('\n')
+                    attrs.append(f'  {key} = <<EOT')
+                    attrs.extend(f'    {line}' for line in lines)
+                    attrs.append('  EOT')
+                else:
+                    attrs.append(f'  {key} = "{value}"')
             elif isinstance(value, bool):
                 attrs.append(f'  {key} = {str(value).lower()}')
             elif isinstance(value, dict):
@@ -611,6 +625,53 @@ class ConsoleOutput:
         print(f"\n{cls.HEADER}{cls.BOLD}{message}{cls.ENDC}")
         print(f"{cls.HEADER}{'=' * len(message)}{cls.ENDC}\n")
 
+def validate_trigger_pattern(pattern: str) -> bool:
+    """
+    Validate a trigger pattern format.
+    Returns True if the pattern is valid, False otherwise.
+    """
+    # Skip validation for comments
+    if pattern.startswith('#'):
+        return True
+        
+    # Basic validation rules:
+    # 1. Pattern should not be empty after stripping
+    # 2. Pattern should not contain invalid characters
+    # 3. Pattern should follow gitignore-like syntax
+    
+    pattern = pattern.strip()
+    if not pattern:
+        return False
+        
+    # Check for invalid characters (if any)
+    # Note: Scalr uses gitignore-like syntax, so most characters are valid
+    invalid_chars = ['\n', '\r']  # Newlines are not allowed in patterns
+    if any(char in pattern for char in invalid_chars):
+        return False
+        
+    return True
+
+def handle_trigger_patterns(patterns: List[str]) -> Optional[str]:
+    """
+    Process and validate trigger patterns.
+    Returns a multiline string of valid patterns or None if no valid patterns exist.
+    """
+    try:
+        if not patterns:
+            return None
+        
+        validated_patterns = []
+        for pattern in patterns:
+            if validate_trigger_pattern(pattern):
+                validated_patterns.append(pattern)
+            else:
+                ConsoleOutput.warning(f"Invalid trigger pattern: {pattern}")
+        
+        return "\n".join(validated_patterns)
+    except Exception as e:
+        ConsoleOutput.error(f"Error processing trigger patterns: {str(e)}")
+        return None
+
 class MigrationService:
     def __init__(self, args: MigratorArgs):
         self.args: MigratorArgs = args
@@ -751,6 +812,7 @@ class MigrationService:
 
         vcs_id = None
         branch = None
+        trigger_patterns = None
 
         if vcs_repo:
             vcs_id = self.get_vcs_provider_id()
@@ -763,6 +825,13 @@ class MigrationService:
                 "branch": branch,
                 "ingress-submodules": vcs_repo["ingress-submodules"],
             }
+
+            if attributes.get("trigger-prefixes"):
+                workspace_attrs["vcs-repo"]["trigger-prefixes"] = attributes["trigger-prefixes"]
+            
+            if attributes.get("trigger-patterns"):
+                trigger_patterns = handle_trigger_patterns(attributes["trigger-patterns"])
+                workspace_attrs["vcs-repo"]["trigger-patterns"] = trigger_patterns
 
         response = self.scalr.create_workspace(env_id, workspace_attrs, vcs_id)
         ConsoleOutput.success(f"Created workspace '{attributes['name']}'")
@@ -785,11 +854,15 @@ class MigrationService:
             resource_attributes["vcs_repo"] = {
                 "identifier": vcs_repo["display-identifier"],
                 "dry_runs_enabled": attributes["speculative-enabled"],
-                "trigger_prefixes": attributes["trigger-prefixes"],
                 "branch": branch,
                 "ingress_submodules": vcs_repo["ingress-submodules"],
             }
             resource_attributes["vcs_provider_id"] = self.get_vcs_data()
+            if attributes.get("trigger-prefixes"):
+                resource_attributes["vcs_repo"]["trigger_prefixes"] = attributes["trigger-prefixes"]
+
+            if trigger_patterns:
+                resource_attributes["vcs_repo"]["trigger_patterns"] = trigger_patterns
 
         workspace_resource = TerraformResource(
             "scalr_workspace",
