@@ -149,7 +149,7 @@ class AbstractTerraformResource:
                             # Special handling for trigger_patterns
                             if repo_key == "trigger_patterns" and '\n' in repo_value:
                                 attrs.append(f'    {repo_key} = <<EOT')
-                                attrs.extend(f'      {line}' for line in repo_value.split('\n'))
+                                attrs.extend(f'{line}' for line in repo_value.split('\n'))
                                 attrs.append('    EOT')
                             else:
                                 attrs.append(f'    {repo_key} = "{repo_value}"')
