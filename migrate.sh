@@ -182,10 +182,6 @@ if [ -z "$SCALR_ENVIRONMENT" ]; then
     export SCALR_ENVIRONMENT=${TFC_PROJECT:-$TFC_ORGANIZATION}
 fi
 
-if [ -z "$REMOTE_BACKEND" ]; then
-    export REMOTE_BACKEND=scalr
-fi
-
 install_dependencies=false
 # Create and activate virtual environment
 if [ ! -d "venv" ]; then
@@ -208,7 +204,6 @@ CMD="python3 migrator.py"
 CMD="$CMD --scalr-hostname \"$SCALR_HOSTNAME\""
 CMD="$CMD --scalr-token \"$SCALR_TOKEN\""
 CMD="$CMD --scalr-environment \"$SCALR_ENVIRONMENT\""
-CMD="$CMD --remote-backend \"$REMOTE_BACKEND\""
 CMD="$CMD --tfc-hostname \"$TFC_HOSTNAME\""
 CMD="$CMD --tfc-token \"$TFC_TOKEN\""
 CMD="$CMD --tfc-organization \"$TFC_ORGANIZATION\""
