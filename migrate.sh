@@ -76,12 +76,14 @@ show_help() {
     echo "  --tfc-project PROJECT             TFC project name to filter workspaces by"
     echo "  --scalr-environment ENV           Scalr environment to create (default: TFC/E organization name)"
     echo "  --vcs-name NAME                   VCS identifier. Required for creation VCS-driven workspaces."
+    echo "  --pc-name NAME                    Provider configuration name to link to workspaces"
     echo "  --workspaces PATTERN              Workspaces to migrate (default: all)"
     echo "  --skip-workspace-creation         Skip creating new workspaces in Scalr"
     echo "  --skip-backend-secrets            Skip creating shell variables in Scalr"
     echo "  --skip-tfc-lock                   Skip locking of the TFC/E workspaces after migration"
     echo "  --management-env-name NAME        Name of the management environment (default: scalr-admin)"
-    echo "  --disable-deletion-protection     Disable deletioyesn protection in workspace resources"
+    echo "  --disable-deletion-protection     Disable deletion protection in workspace resources"
+    echo "  --skip-variables PATTERNS         Comma-separated list of variable keys to skip, or '*' to skip all variables"
     echo "  --help                            Show this help message"
     echo ""
     echo "Example:"
@@ -91,70 +93,78 @@ show_help() {
 # Parse command line arguments
 ARGS=()
 while [[ $# -gt 0 ]]; do
-    case "$1" in
+    case $1 in
+        --scalr-hostname)
+            export SCALR_HOSTNAME="$2"
+            shift 2
+            ;;
+        --scalr-token)
+            export SCALR_TOKEN="$2"
+            shift 2
+            ;;
+        --scalr-environment)
+            export SCALR_ENVIRONMENT="$2"
+            shift 2
+            ;;
+        --tfc-hostname)
+            export TFC_HOSTNAME="$2"
+            shift 2
+            ;;
+        --tfc-token)
+            export TFC_TOKEN="$2"
+            shift 2
+            ;;
+        --tfc-organization)
+            export TFC_ORGANIZATION="$2"
+            shift 2
+            ;;
+        --tfc-project)
+            export TFC_PROJECT="$2"
+            shift 2
+            ;;
+        -v|--vcs-name)
+            export SCALR_VCS_NAME="$2"
+            shift 2
+            ;;
+        --pc-name)
+            export SCALR_PC_NAME="$2"
+            shift 2
+            ;;
+        -w|--workspaces)
+            export WORKSPACES="$2"
+            shift 2
+            ;;
+        --skip-workspace-creation)
+            export SKIP_WORKSPACE_CREATION=true
+            shift
+            ;;
+        --skip-backend-secrets)
+            export SKIP_BACKEND_SECRETS=true
+            shift
+            ;;
+        --skip-tfc-lock)
+            export SKIP_TFC_LOCK=true
+            shift
+            ;;
+        --management-env-name)
+            export MANAGEMENT_ENV_NAME="$2"
+            shift 2
+            ;;
+        --disable-deletion-protection)
+            export DISABLE_DELETION_PROTECTION=true
+            shift
+            ;;
+        --skip-variables)
+            export SKIP_VARIABLES="$2"
+            shift 2
+            ;;
         --help)
             show_help
             exit 0
             ;;
-        --scalr-hostname)
-            SCALR_HOSTNAME="$2"
-            shift 2
-            ;;
-        --scalr-token)
-            SCALR_TOKEN="$2"
-            shift 2
-            ;;
-        --scalr-environment)
-            SCALR_ENVIRONMENT="$2"
-            shift 2
-            ;;
-        --tfc-hostname)
-            TFC_HOSTNAME="$2"
-            shift 2
-            ;;
-        --tfc-token)
-            TFC_TOKEN="$2"
-            shift 2
-            ;;
-        --tfc-organization)
-            TFC_ORGANIZATION="$2"
-            shift 2
-            ;;
-        -v|--vcs-name)
-            SCALR_VCS_NAME="$2"
-            shift 2
-            ;;
-        -w|--workspaces)
-            WORKSPACES="$2"
-            shift 2
-            ;;
-        --skip-workspace-creation)
-            SKIP_WORKSPACE_CREATION=true
-            shift
-            ;;
-        --skip-backend-secrets)
-            SKIP_BACKEND_SECRETS=true
-            shift
-            ;;
-        -l|--skip-tfc-lock)
-            SKIP_TFC_LOCK=true
-            shift
-            ;;
-        --management-env-name)
-            MANAGEMENT_ENV_NAME="$2"
-            shift 2
-            ;;
-        --disable-deletion-protection)
-            DISABLE_DELETION_PROTECTION=true
-            shift
-            ;;
-        --tfc-project)
-            TFC_PROJECT="$2"
-            shift 2
-            ;;
         *)
-            echo "Unknown option: $1"
-            exit 1
+            ARGS+=("$1")
+            shift
             ;;
     esac
 done
@@ -170,6 +180,10 @@ MANAGEMENT_ENV_NAME=${MANAGEMENT_ENV_NAME:-$DEFAULT_MANAGEMENT_ENV_NAME}
 
 if [ -z "$SCALR_ENVIRONMENT" ]; then
     export SCALR_ENVIRONMENT=${TFC_PROJECT:-$TFC_ORGANIZATION}
+fi
+
+if [ -z "$REMOTE_BACKEND" ]; then
+    export REMOTE_BACKEND=scalr
 fi
 
 install_dependencies=false
@@ -194,10 +208,12 @@ CMD="python3 migrator.py"
 CMD="$CMD --scalr-hostname \"$SCALR_HOSTNAME\""
 CMD="$CMD --scalr-token \"$SCALR_TOKEN\""
 CMD="$CMD --scalr-environment \"$SCALR_ENVIRONMENT\""
+CMD="$CMD --remote-backend \"$REMOTE_BACKEND\""
 CMD="$CMD --tfc-hostname \"$TFC_HOSTNAME\""
 CMD="$CMD --tfc-token \"$TFC_TOKEN\""
 CMD="$CMD --tfc-organization \"$TFC_ORGANIZATION\""
 [ -n "$SCALR_VCS_NAME" ] && CMD="$CMD -v \"$SCALR_VCS_NAME\""
+[ -n "$SCALR_PC_NAME" ] && CMD="$CMD --pc-name \"$SCALR_PC_NAME\""
 [ -n "$WORKSPACES" ] && CMD="$CMD -w \"$WORKSPACES\""
 [ "$SKIP_WORKSPACE_CREATION" = true ] && CMD="$CMD --skip-workspace-creation"
 [ "$SKIP_BACKEND_SECRETS" = true ] && CMD="$CMD --skip-backend-secrets"
@@ -205,6 +221,7 @@ CMD="$CMD --tfc-organization \"$TFC_ORGANIZATION\""
 [ -n "$MANAGEMENT_ENV_NAME" ] && CMD="$CMD --management-env-name \"$MANAGEMENT_ENV_NAME\""
 [ "$DISABLE_DELETION_PROTECTION" = true ] && CMD="$CMD --disable-deletion-protection"
 [ -n "$TFC_PROJECT" ] && CMD="$CMD --tfc-project \"$TFC_PROJECT\""
+[ -n "$SKIP_VARIABLES" ] && CMD="$CMD --skip-variables \"$SKIP_VARIABLES\""
 
 # Run the migrator
 echo "Running migrator..."
@@ -224,7 +241,7 @@ if [ $? -eq 0 ]; then
     cd "./generated-terraform/$SCALR_ENVIRONMENT" || exit 1
 
     pwd
-
+    terraform fmt
     terraform init
     terraform apply
 

@@ -1,9 +1,14 @@
 # Terraform Cloud/Enterprise to Scalr Migration Tool
 
-This tool helps migrate workspaces from Terraform Cloud/Enterprise (TFC/E) to Scalr, including:
-- Workspace configurations
-- State files
-- Variables
+This tool helps migrate workspaces from Terraform Cloud/Enterprise (TFC/E) to Scalr. It handles:
+- Workspace migration with all attributes
+- State file migration
+- Variable migration (including sensitive variables from plan files)
+- VCS provider configuration
+- Provider configuration linking
+- Remote state consumers
+- Trigger patterns handling
+- Workspace locking in TFC/E after migration
 
 ## Features
 
@@ -32,11 +37,11 @@ This tool helps migrate workspaces from Terraform Cloud/Enterprise (TFC/E) to Sc
 
 ## Prerequisites
 
-- Python 3.12
-- Terraform CLI
-- `jq` command-line tool (for JSON processing)
-- Access to both TFC/E and Scalr instances
-- Appropriate tokens for both platforms
+- Python 3.12 or higher
+- Terraform Cloud/Enterprise credentials
+- Scalr credentials
+- VCS provider configured in Scalr (if migrating workspaces with VCS)
+- Provider configuration in Scalr (if linking workspaces to provider configurations)
 
 ## Installation
 
@@ -99,40 +104,44 @@ terraform login account.scalr.io
 
 ## Usage
 
-### Basic Usage
-
 ```bash
-./migrate.sh --tfc-organization "my-org" --scalr-hostname "account.scalr.io"
+./migrate.sh --scalr-hostname <scalr-hostname> \
+             --scalr-token <scalr-token> \
+             --tfc-hostname <tfc-hostname> \
+             --tfc-token <tfc-token> \
+             --tfc-organization <tfc-org> \
+             [-v|--vcs-name <vcs-name>] \
+             [--pc-name <pc-name>] \
+             [-w|--workspaces <workspace-pattern>] \
+             [--skip-workspace-creation] \
+             [--skip-backend-secrets] \
+             [--skip-tfc-lock] \
+             [--management-env-name <name>] \
+             [--disable-deletion-protection] \
+             [--tfc-project <project-name>] \
+             [--skip-variables <pattern>]
 ```
 
-### Advanced Options
+### Required Arguments
 
-Migrates all production workspaces of dedicated project into separate production Scalr environment:
-
-```bash
-./migrate.sh \
-  --tfc-organization "my-org" \
-  --tfc-project "my-project" \
-  --workspaces "prod-*" \
-  --scalr-environment "my-project-prod" \
-  --management-env-name "scalr-administration"
-```
-
-### Available Options
-
-- `--scalr-hostname`: Scalr hostname (default: account.scalr.io)
-- `--scalr-token`: Scalr token
-- `--scalr-environment`: Scalr environment (optional)
-- `--tfc-hostname`: TFC/E hostname (default: app.terraform.io)
-- `--tfc-token`: TFC/E token
+- `--scalr-hostname`: Scalr hostname (e.g., `myorg.scalr.io`)
+- `--scalr-token`: Scalr API token
+- `--tfc-hostname`: TFC/E hostname (e.g., `app.terraform.io`)
+- `--tfc-token`: TFC/E API token
 - `--tfc-organization`: TFC/E organization name
-- `--tfc-project`: TFC/E project name
-- `--vcs-name`: VCS Provider name
-- `--workspaces`: Workspaces to migrate (default: *)
-- `--skip-workspace-creation`: Skip workspace creation in Scalr, state migration will be performed only
-- `--skip-backend-secrets`: Skip Scalr/TFE secrets creation
-- `--skip-tfc-lock`: Skip locking of TFC/E workspaces. By default, workspaces are locked after migration to prevent state conflicts.
-- `--management-env-name`: Management environment name in which the generated code will be exported
+
+### Optional Arguments
+
+- `-v|--vcs-name`: VCS provider name in Scalr (required if not using `--skip-workspace-creation`)
+- `--pc-name`: Provider configuration name in Scalr to link to workspaces
+- `-w|--workspaces`: Workspace name pattern (supports glob patterns, default: "*")
+- `--skip-workspace-creation`: Skip workspace creation in Scalr (use if workspaces already exist)
+- `--skip-backend-secrets`: Skip creation of shell variables for backend configuration
+- `--skip-tfc-lock`: Skip locking TFC/E workspaces after migration
+- `--management-env-name`: Name of the management environment (default: "scalr-admin")
+- `--disable-deletion-protection`: Disable deletion protection in workspace resources
+- `--tfc-project`: TFC project name to filter workspaces by
+- `--skip-variables`: Comma-separated list of variable patterns to skip, or "*" to skip all variables
 
 ## Generated Files
 
@@ -172,10 +181,10 @@ After successful migration, the tool will execute terraform apply and imports al
 ## Contributing
 
 1. Fork the repository
-2. Create your feature branch
+2. Create a feature branch
 3. Commit your changes
 4. Push to the branch
-5. Create a new Pull Request
+5. Create a Pull Request
 
 ## License
 

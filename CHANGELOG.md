@@ -1,5 +1,17 @@
 [Unreleased]
 
+[0.3.2] - 2025-04-16
+
+### Added
+- Support for provider configuration linking via `--pc-name` argument
+- Improved variable handling with pattern-based skipping
+
+### Changed
+- Updated workspace creation to support provider configuration linking
+
+### Fixed
+- Setting workspaces working directories
+
 [0.3.1] - 2025-04-14
 
 ### Changes

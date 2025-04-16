@@ -83,6 +83,7 @@ class MigratorArgs:
     tfc_token: str
     tfc_organization: str
     vcs_name: Optional[str]
+    pc_name: Optional[str]
     workspaces: str
     skip_workspace_creation: bool
     skip_backend_secrets: bool
@@ -93,6 +94,7 @@ class MigratorArgs:
     management_env_name: str = DEFAULT_MANAGEMENT_ENV_NAME
     disable_deletion_protection: bool = False
     debug_enabled: bool = False
+    skip_variables: Optional[str] = None
 
     @classmethod
     def from_argparse(cls, args: argparse.Namespace) -> 'MigratorArgs':
@@ -105,6 +107,7 @@ class MigratorArgs:
             tfc_organization=args.tfc_organization,
             tfc_project=args.tfc_project,
             vcs_name=args.vcs_name,
+            pc_name=args.pc_name,
             workspaces=args.workspaces or "*",
             skip_workspace_creation=args.skip_workspace_creation,
             skip_backend_secrets=args.skip_backend_secrets,
@@ -112,6 +115,7 @@ class MigratorArgs:
             management_env_name=args.management_env_name,
             management_workspace_name=f"{args.scalr_environment}",
             disable_deletion_protection=args.disable_deletion_protection,
+            skip_variables=args.skip_variables
         )
 
 class HClAttribute:
@@ -129,57 +133,82 @@ class HClAttribute:
         except (ValueError, TypeError):
             return self.hcl_value
 
+class HCLObject:
+    def __init__(self, attributes: dict) -> None:
+        self.attributes = attributes
+
+
 class AbstractTerraformResource:
     def __init__(self, resource_type: str, name: str, attributes: Dict, hcl_resource_type: str) -> None:
         self.resource_type = resource_type
-        self.name = name
+        self.name = name.lower().replace('-', '_')
         self.attributes = attributes
         self.id = None
         self.hcl_resource_type: str = hcl_resource_type
 
+    def _render_attribute(self, attrs: list, key, value, ident: Optional[int] = None):
+        if not ident:
+            ident = 2
+
+        if key == "vcs_repo" and self.resource_type == "scalr_workspace":
+            # Special handling for vcs_repo block in scalr_workspace
+            attrs.append((" "*ident) + "vcs_repo {")
+            for repo_key, repo_value in value.items():
+                if repo_value is not None:  # Skip None values
+                    if isinstance(repo_value, str):
+                        # Special handling for trigger_patterns
+                        if repo_key == "trigger_patterns" and '\n' in repo_value:
+                            attrs.append((" " * (ident + 2)) + f'{repo_key} = <<EOT')
+                            attrs.extend(f'{line}' for line in repo_value.split('\n'))
+                            attrs.append('    EOT')
+                        else:
+                            attrs.append((" " * (ident + 2)) + f'{repo_key} = "{repo_value}"')
+                    elif isinstance(repo_value, bool):
+                        attrs.append((" " * (ident + 2)) + f'{repo_key} = {str(repo_value).lower()}')
+                    elif isinstance(repo_value, list):
+                        attrs.append((" " * (ident + 2)) + f'{repo_key} = {json.dumps(repo_value)}')
+            attrs.append("  }")
+        elif isinstance(value, str):
+            # Check if the value contains newlines and use EOT format if it does
+            if '\n' in value:
+                # Split the value into lines and indent each line
+                lines = value.split('\n')
+                attrs.append((" " * ident) + f'{key} = <<EOT')
+                attrs.extend((" " * ident) + f'{line}' for line in lines)
+                attrs.append((" " * ident) + f'EOT')
+            else:
+                attrs.append((" " * ident) + f'{key} = "{value}"')
+        elif isinstance(value, bool):
+            attrs.append((" " * ident) + f'{key} = {str(value).lower()}')
+        elif isinstance(value, dict):
+            attrs.append((" " * ident) + f'{key} = {json.dumps(value)}')
+        elif isinstance(value, list):
+            attrs.append((" " * ident) + f'{key} = [')
+            for v in value:
+                if isinstance(v, str):
+                    attrs.append(f'"{v}",')
+                elif isinstance(v, AbstractTerraformResource):
+                    attrs.append((" " * (ident + 2)) + f'{v.get_address()},')
+            attrs.append((" " * ident) + ']')
+
+        elif isinstance(value, HClAttribute):
+            attrs.append((" " * ident) + f'{key} = {value.get_hcl_value()}')
+        elif isinstance(value, AbstractTerraformResource):
+            attrs.append((" " * ident) + f'{key} = {value.get_address()}')
+        elif isinstance(value, HCLObject):
+            attrs.append((" " * ident) + f'{key} ' + '{')
+            for hcl_key, hcl_value in value.attributes.items():
+                self._render_attribute(attrs, hcl_key, hcl_value, ident + 2)
+            attrs.append((" " * ident) + '}')
+        elif value is None:
+            pass
+        else:
+            attrs.append((" " * ident) + f'{key} = {value}')
+
     def to_hcl(self) -> str:
         attrs = []
         for key, value in self.attributes.items():
-            if key == "vcs_repo" and self.resource_type == "scalr_workspace":
-                # Special handling for vcs_repo block in scalr_workspace
-                attrs.append("  vcs_repo {")
-                for repo_key, repo_value in value.items():
-                    if repo_value is not None:  # Skip None values
-                        if isinstance(repo_value, str):
-                            # Special handling for trigger_patterns
-                            if repo_key == "trigger_patterns" and '\n' in repo_value:
-                                attrs.append(f'    {repo_key} = <<EOT')
-                                attrs.extend(f'{line}' for line in repo_value.split('\n'))
-                                attrs.append('    EOT')
-                            else:
-                                attrs.append(f'    {repo_key} = "{repo_value}"')
-                        elif isinstance(repo_value, bool):
-                            attrs.append(f'    {repo_key} = {str(repo_value).lower()}')
-                        elif isinstance(repo_value, list):
-                            attrs.append(f'    {repo_key} = {json.dumps(repo_value)}')
-                attrs.append("  }")
-            elif isinstance(value, str):
-                # Check if the value contains newlines and use EOT format if it does
-                if '\n' in value:
-                    # Split the value into lines and indent each line
-                    lines = value.split('\n')
-                    attrs.append(f'  {key} = <<EOT')
-                    attrs.extend(f'    {line}' for line in lines)
-                    attrs.append('  EOT')
-                else:
-                    attrs.append(f'  {key} = "{value}"')
-            elif isinstance(value, bool):
-                attrs.append(f'  {key} = {str(value).lower()}')
-            elif isinstance(value, dict):
-                attrs.append(f'  {key} = {json.dumps(value)}')
-            elif isinstance(value, HClAttribute):
-                attrs.append(f'  {key} = {value.get_hcl_value()}')
-            elif isinstance(value, AbstractTerraformResource):
-                attrs.append(f'  {key} = {value.get_address()}')
-            elif value is None:
-                continue
-            else:
-                attrs.append(f'  {key} = {value}')
+            self._render_attribute(attrs, key, value)
         
         return f'{self.hcl_resource_type} "{self.resource_type}" "{self.name}" {{\n{chr(10).join(attrs)}\n}}'
 
@@ -297,8 +326,9 @@ class ResourceManager:
         return  False
 
     def get_resource(self, resource_type: str, name: str) -> Optional[AbstractTerraformResource]:
+        converted = name.lower().replace('-', '_')
         for existing in self.data_sources + self.resources:
-            if existing.resource_type == resource_type and existing.name == name:
+            if existing.resource_type == resource_type and existing.name == converted:
                 return existing
         return None
 
@@ -519,20 +549,27 @@ class ScalrClient(APIClient):
                             "type": "environments",
                             "id": env_id
                         }
+                    },
+                    "vcs-provider": {"data": {"type": "vcs-providers", "id": vcs_id}} if vcs_id else None,
+                }
+            }
+        }
+
+        return self.post("workspaces", data)
+
+    def link_provider_config(self, workspace_id: str, pc_id: str) -> Dict:
+        data = {
+            "data": {
+                "type": "provider-configuration-links",
+                "relationships": {
+                    "provider-configuration": {
+                        "data": {"id": pc_id, "type": "provider-configurations"}
                     }
                 }
             }
         }
 
-        if vcs_id:
-            data["data"]["relationships"]["vcs-provider"] = {
-                "data": {
-                    "type": "vcs-providers",
-                    "id": vcs_id
-                }
-            }
-
-        return self.post("workspaces", data)
+        return self.post(f"workspaces/{workspace_id}/provider-configuration-links", data)
 
     def create_state_version(self, workspace_id: str, attributes: Dict) -> Dict:
         data = {
@@ -585,9 +622,6 @@ def _enforce_max_version(tf_version: str, workspace_name) -> str:
               f"Downgrading to {MAX_TERRAFORM_VERSION}")
         tf_version = MAX_TERRAFORM_VERSION
     return tf_version
-
-def get_workspace_resource_name(name: str) -> str:
-    return f"ws_{name.lower().replace('-', '_')}"
 
 class ConsoleOutput:
     HEADER = '\033[95m'
@@ -672,7 +706,9 @@ def handle_trigger_patterns(patterns: List[str]) -> Optional[str]:
         ConsoleOutput.error(f"Error processing trigger patterns: {str(e)}")
         return None
 
+
 class MigrationService:
+
     def __init__(self, args: MigratorArgs):
         self.args: MigratorArgs = args
         self.resource_manager: ResourceManager = ResourceManager(f"generated-terraform/{self.args.scalr_environment}")
@@ -682,14 +718,16 @@ class MigrationService:
         self.project_id: Optional[str] = None
         self.vcs_id: Optional[str] = None
         self.vcs_data: Optional[TerraformDataSource] = None
-        self.workspaces_map: Dict = {}
+        self.pc_id: Optional[str] = None
+        self.pc_data: Optional[TerraformDataSource] = None
+        self.workspaces_map = {}
 
         self.load_account_id()
 
-    def create_workspace_map(self, tfc_workspace_id, scalr_workspace_id) -> None:
-        self.workspaces_map[tfc_workspace_id] = scalr_workspace_id
+    def create_workspace_map(self, tfc_workspace_id, workspace: AbstractTerraformResource) -> None:
+        self.workspaces_map[tfc_workspace_id] = workspace
 
-    def get_mapped_scalr_workspace_id(self, tfc_workspace_id) -> str:
+    def get_mapped_scalr_workspace_id(self, tfc_workspace_id) -> AbstractTerraformResource:
         if not self.workspaces_map.get(tfc_workspace_id):
             raise RuntimeError(f"Workspace {tfc_workspace_id} not found.")
         return self.workspaces_map[tfc_workspace_id]
@@ -716,6 +754,18 @@ class MigrationService:
 
         return self.vcs_data
 
+    def get_pc_data(self) -> Optional[TerraformDataSource]:
+        if self.args.pc_name and not self.pc_data:
+            self.pc_data = TerraformDataSource(
+                "scalr_provider_configuration",
+                self.args.pc_name,
+                {"name": self.args.pc_name}
+            )
+
+            self.resource_manager.add_data_source(self.pc_data)
+
+        return self.pc_data
+
     def get_project_id(self) -> Optional[str]:
         if not self.args.tfc_project:
             return None
@@ -730,13 +780,9 @@ class MigrationService:
 
         return self.project_id
 
-    def get_environment_resource_name(self) -> str:
-        return f"env_{self.args.scalr_environment.lower().replace('-', '_')}"
-
     def get_environment_resource_id(self) -> Optional[AbstractTerraformResource]:
         if not self.environment_resource_id:
-            resource_name = self.get_environment_resource_name()
-            env_resource = self.resource_manager.get_resource("scalr_environment", resource_name)
+            env_resource = self.resource_manager.get_resource("scalr_environment", self.args.scalr_environment)
             self.environment_resource_id = env_resource
         return self.environment_resource_id
 
@@ -744,20 +790,18 @@ class MigrationService:
         """Get existing workspace or create a new one."""
         # First try to find existing environment
         environment = self.scalr.get_environment(name)
-        env_resource_name = self.get_environment_resource_name()
 
         if environment:
             if not skip_terraform:
-                environment_data_source = TerraformDataSource("scalr_environment", env_resource_name,{"name": name})
-                if not self.resource_manager.has_resource("scalr_environment", env_resource_name):
-                    self.resource_manager.add_data_source(environment_data_source)
+                environment_data_source = TerraformDataSource("scalr_environment", name, {"name": name})
+                self.resource_manager.add_data_source(environment_data_source)
             return environment
 
         response = self.scalr.create_environment(name, self.args.account_id)["data"]
 
         if not skip_terraform:
             # Create Terraform resource
-            env_resource = TerraformResource("scalr_environment", env_resource_name,{"name": name})
+            env_resource = TerraformResource("scalr_environment", self.args.scalr_environment,{"name": name})
             env_resource.id = response["id"]
             self.resource_manager.add_resource(env_resource)
         ConsoleOutput.success(f"Created main environment: {name}")
@@ -789,7 +833,7 @@ class MigrationService:
             workspace_data = TerraformDataSource("scalr_workspace", env_id, {"name": attributes['name']})
             workspace_data.id = workspace["id"]
             if tf_workspace.get("id"):
-                self.create_workspace_map(tf_workspace['id'], workspace['id'])
+                self.create_workspace_map(tf_workspace['id'], workspace_data)
             return workspace_data
 
         ConsoleOutput.info(f"Creating workspace '{attributes['name']}'...")
@@ -803,16 +847,16 @@ class MigrationService:
             "auto-apply": attributes["auto-apply"],
             "operations": attributes["operations"],
             "terraform-version": terraform_version,
-            "working_directory": attributes.get("working-directory"),
+            "working-directory": attributes.get("working-directory"),
             "deletion-protection-enabled": not self.args.disable_deletion_protection,
             "remote-state-sharing": global_remote_state,
         }
 
-        vcs_repo = attributes.get("vcs-repo")
-
         vcs_id = None
         branch = None
         trigger_patterns = None
+        pc_id = self.get_provider_configuration_id()
+        vcs_repo = attributes.get("vcs-repo")
 
         if vcs_repo:
             vcs_id = self.get_vcs_provider_id()
@@ -834,7 +878,12 @@ class MigrationService:
                 workspace_attrs["vcs-repo"]["trigger-patterns"] = trigger_patterns
 
         response = self.scalr.create_workspace(env_id, workspace_attrs, vcs_id)
+
         ConsoleOutput.success(f"Created workspace '{attributes['name']}'")
+
+        if pc_id:
+            self.scalr.link_provider_config(response["data"]["id"], pc_id)
+            ConsoleOutput.info(f"Linked provider configuration: {self.args.pc_name}")
 
         # Create Terraform resource
         resource_attributes = {
@@ -864,15 +913,18 @@ class MigrationService:
             if trigger_patterns:
                 resource_attributes["vcs_repo"]["trigger_patterns"] = trigger_patterns
 
+        if pc_id:
+            resource_attributes["provider_configuration"] = HCLObject({"id": self.get_pc_data()})
+
         workspace_resource = TerraformResource(
             "scalr_workspace",
-            get_workspace_resource_name(attributes["name"]),
+            attributes["name"],
             resource_attributes
         )
 
         workspace_resource.id = response["data"]["id"]
         if tf_workspace.get('id'):
-            self.create_workspace_map(tf_workspace['id'], workspace_resource.id)
+            self.create_workspace_map(tf_workspace['id'], workspace_resource)
 
         if not skip_terraform_resource:
             self.resource_manager.add_resource(workspace_resource)
@@ -950,6 +1002,11 @@ class MigrationService:
         ConsoleOutput.info(f"Migrating state...")
         self.create_state(tf_workspace, workspace.id)
 
+        # Skip variable migration if requested
+        if self.args.skip_variables == "*":
+            ConsoleOutput.info("Skipping all variable migration as requested")
+            return True
+
         ConsoleOutput.info("Migrating variables...")
         relationships = {
             "workspace": {
@@ -961,10 +1018,16 @@ class MigrationService:
         }
 
         skipped_sensitive_vars = {}
+        skip_patterns = self.args.skip_variables.split(',') if self.args.skip_variables else []
 
         for api_var in self.tfc.get_workspace_vars(self.args.tfc_organization, workspace_name)["data"]:
             attributes = api_var["attributes"]
             var_key: str = attributes["key"]
+
+            # Skip variable if it matches any of the skip patterns
+            if any(fnmatch.fnmatch(var_key, pattern.strip()) for pattern in skip_patterns):
+                ConsoleOutput.info(f"Skipping variable '{var_key}' as requested")
+                continue
 
             if attributes["category"] == "env":
                 attributes["category"] = "shell"
@@ -996,7 +1059,7 @@ class MigrationService:
             # Create Terraform resource for non-sensitive variables
             var_resource = TerraformResource(
                 "scalr_variable",
-                f"var_{attributes['key'].lower().replace('-', '_')}",
+                attributes['key'],
                 {
                     "key": attributes["key"],
                     "description": attributes["description"],
@@ -1006,7 +1069,6 @@ class MigrationService:
                     "hcl": attributes["hcl"],
                 },
             )
-
             var_resource.id = response["data"]["id"]
             self.resource_manager.add_resource(var_resource)
 
@@ -1036,7 +1098,7 @@ class MigrationService:
 
                         var_resource = TerraformResource(
                             "scalr_variable",
-                            f"var_{var.lower().replace('-', '_')}",
+                            var,
                             {
                                 "key":var,
                                 "description": skipped_sensitive_vars[var]["description"],
@@ -1152,6 +1214,15 @@ class MigrationService:
 
         return self.vcs_id
 
+    def get_provider_configuration_id(self) -> str:
+        if self.args.pc_name and not self.pc_id:
+            pc_provider = self.scalr.get("provider-configurations", {"filter[name]": self.args.pc_name})["data"][0]
+            if not pc_provider:
+                raise VCSMissingError(f"Provider configuration with name '{self.args.pc_name}' not found.")
+            self.pc_id = pc_provider["id"]
+
+        return self.pc_id
+
     def migrate(self):
         ConsoleOutput.section("Preparing migration")
         self.init_backend_secrets()
@@ -1176,7 +1247,7 @@ class MigrationService:
 
         # Create management environment and workspace
         ConsoleOutput.info(f"Creating post-management Scalr environment '{self.args.management_env_name}'...")
-        management_env = self.create_environment(self.args.management_env_name, True)
+        management_env = self.create_environment(self.args.management_env_name, skip_terraform=True)
 
         ConsoleOutput.info(f"Creating post-management Scalr workspace '{self.args.management_workspace_name}'...")
         self.create_workspace(
@@ -1238,18 +1309,22 @@ class MigrationService:
         ConsoleOutput.section("Post-migrating state consumers")
         for tfc_id, consumers_data in workspace_state_consumers.items():
             try:
-                scalr_id = self.get_mapped_scalr_workspace_id(tfc_id)
-                consumers = []
+                scalr_id = self.get_mapped_scalr_workspace_id(tfc_id).id
+                consumer_ids = []
+                consumer_resources: List[AbstractTerraformResource] = []
                 tfc_consumers = self.tfc.get_by_short_url(consumers_data['url'])['data']
                 for state_consumer in tfc_consumers:
-                    consumers.append(self.get_mapped_scalr_workspace_id(state_consumer['id']))
+                    consumer = self.get_mapped_scalr_workspace_id(state_consumer['id'])
+                    consumer_ids.append(consumer.id)
+                    consumer_resources.append(consumer)
 
-                self.scalr.update_consumers(scalr_id, consumers)
+                if consumer_ids:
+                    self.scalr.update_consumers(scalr_id, consumer_ids)
 
-                self.resource_manager.get_resource(
-                    'scalr_workspace',
-                    get_workspace_resource_name(consumers_data['workspace_name'])
-                ).add_attribute('remote_state_consumers', consumers)
+                    self.resource_manager.get_resource(
+                        'scalr_workspace',
+                        consumers_data['workspace_name']
+                    ).add_attribute('remote_state_consumers', consumer_resources)
             except RuntimeError as e:
                 ConsoleOutput.warning(e.args[0])
                 continue
@@ -1285,6 +1360,7 @@ def main():
     parser.add_argument('--tfc-token', type=str, help='TFC/E token')
     parser.add_argument('--tfc-organization', type=str, help='TFC/E organization name')
     parser.add_argument('-v', '--vcs-name', type=str, help='VCS identifier')
+    parser.add_argument('--pc-name', type=str, help='Provider configuration name')
     parser.add_argument('-w', '--workspaces', type=str, help='Workspaces to migrate. By default - all')
     parser.add_argument('--skip-workspace-creation', action='store_true', help='Whether to create new workspaces in Scalr. Set to True if the workspace is already created in Scalr.')
     parser.add_argument('--skip-backend-secrets', action='store_true', help='Whether to create shell variables (`SCALR_` and `TFC_`) in Scalr.')
@@ -1292,6 +1368,7 @@ def main():
     parser.add_argument('--management-env-name', type=str, default=DEFAULT_MANAGEMENT_ENV_NAME, help=f'Name of the management environment. Default: {DEFAULT_MANAGEMENT_ENV_NAME}')
     parser.add_argument('--disable-deletion-protection', action='store_true', help='Disable deletion protection in workspace resources. Default: enabled')
     parser.add_argument('--tfc-project', type=str, help='TFC project name to filter workspaces by')
+    parser.add_argument('--skip-variables', type=str, help='Comma-separated list of variable keys to skip, or "*" to skip all variables')
 
     args = parser.parse_args()
     
@@ -1301,7 +1378,7 @@ def main():
     if missing_args:
         ConsoleOutput.error(f"Missing required arguments: {', '.join(missing_args)}")
         sys.exit(1)
-    
+
     # Validate vcs_name if needed
     validate_vcs_name(args)
 
