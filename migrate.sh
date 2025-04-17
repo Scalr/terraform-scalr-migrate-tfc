@@ -50,12 +50,16 @@ validate_required_params() {
         missing_params+=("TFC_ORGANIZATION")
     fi
     
+    if [ -z "$SCALR_ENVIRONMENT" ]; then
+        missing_params+=("SCALR_ENVIRONMENT")
+    fi
+    
+    if [ -z "$SCALR_VCS_NAME" ] && [ "$SKIP_WORKSPACE_CREATION" != "true" ]; then
+        missing_params+=("SCALR_VCS_NAME")
+    fi
+    
     if [ ${#missing_params[@]} -ne 0 ]; then
-        echo "Error: Missing required parameters: ${missing_params[*]}"
-        echo "Please provide these parameters either through:"
-        echo "1. Command-line arguments"
-        echo "2. Environment variables"
-        echo "3. ~/.terraform.d/credentials.tfrc.json file"
+        echo "Missing required parameters: ${missing_params[*]}"
         exit 1
     fi
 }
@@ -84,6 +88,7 @@ show_help() {
     echo "  --management-env-name NAME        Name of the management environment (default: scalr-admin)"
     echo "  --disable-deletion-protection     Disable deletion protection in workspace resources"
     echo "  --skip-variables PATTERNS         Comma-separated list of variable keys to skip, or '*' to skip all variables"
+    echo "  --agent-pool-name NAME            Scalr agent pool name"
     echo "  --help                            Show this help message"
     echo ""
     echo "Example:"
@@ -158,6 +163,10 @@ while [[ $# -gt 0 ]]; do
             export SKIP_VARIABLES="$2"
             shift 2
             ;;
+        --agent-pool-name)
+            export SCALR_AGENT_POOL_NAME="$2"
+            shift 2
+            ;;
         --help)
             show_help
             exit 0
@@ -200,14 +209,14 @@ if [ "$install_dependencies" = true ]; then
 fi
 
 # Build the command
-CMD="python3 migrator.py"
+CMD="python3.12 migrator.py"
 CMD="$CMD --scalr-hostname \"$SCALR_HOSTNAME\""
 CMD="$CMD --scalr-token \"$SCALR_TOKEN\""
 CMD="$CMD --scalr-environment \"$SCALR_ENVIRONMENT\""
 CMD="$CMD --tfc-hostname \"$TFC_HOSTNAME\""
 CMD="$CMD --tfc-token \"$TFC_TOKEN\""
 CMD="$CMD --tfc-organization \"$TFC_ORGANIZATION\""
-[ -n "$SCALR_VCS_NAME" ] && CMD="$CMD -v \"$SCALR_VCS_NAME\""
+[ -n "$SCALR_VCS_NAME" ] && CMD="$CMD --vcs-name \"$SCALR_VCS_NAME\""
 [ -n "$SCALR_PC_NAME" ] && CMD="$CMD --pc-name \"$SCALR_PC_NAME\""
 [ -n "$WORKSPACES" ] && CMD="$CMD -w \"$WORKSPACES\""
 [ "$SKIP_WORKSPACE_CREATION" = true ] && CMD="$CMD --skip-workspace-creation"
@@ -217,6 +226,7 @@ CMD="$CMD --tfc-organization \"$TFC_ORGANIZATION\""
 [ "$DISABLE_DELETION_PROTECTION" = true ] && CMD="$CMD --disable-deletion-protection"
 [ -n "$TFC_PROJECT" ] && CMD="$CMD --tfc-project \"$TFC_PROJECT\""
 [ -n "$SKIP_VARIABLES" ] && CMD="$CMD --skip-variables \"$SKIP_VARIABLES\""
+[ -n "$SCALR_AGENT_POOL_NAME" ] && CMD="$CMD --agent-pool-name \"$SCALR_AGENT_POOL_NAME\""
 
 # Run the migrator
 echo "Running migrator..."

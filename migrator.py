@@ -29,7 +29,7 @@ MAX_RETRIES = 3
 class RateLimitError(Exception):
     pass
 
-class VCSMissingError(Exception):
+class MissingDataError(Exception):
     pass
 
 def handle_rate_limit(response: urllib.response.addinfourl) -> None:
@@ -78,16 +78,17 @@ def make_request(
 class MigratorArgs:
     scalr_hostname: str
     scalr_token: str
-    scalr_environment: Optional[str]
     tfc_hostname: str
     tfc_token: str
     tfc_organization: str
+    scalr_environment: str
     vcs_name: Optional[str]
     pc_name: Optional[str]
     workspaces: str
     skip_workspace_creation: bool
     skip_backend_secrets: bool
     management_workspace_name: str
+    agent_pool_name: Optional[str] = None
     account_id: Optional[str] = None
     lock: bool = True
     tfc_project: Optional[str] = None
@@ -98,6 +99,9 @@ class MigratorArgs:
 
     @classmethod
     def from_argparse(cls, args: argparse.Namespace) -> 'MigratorArgs':
+        if not args.scalr_environment:
+            args.scalr_environment = args.tfc_project if args.tfc_project else args.tfc_organization
+
         return cls(
             scalr_hostname=args.scalr_hostname,
             scalr_token=args.scalr_token,
@@ -108,6 +112,7 @@ class MigratorArgs:
             tfc_project=args.tfc_project,
             vcs_name=args.vcs_name,
             pc_name=args.pc_name,
+            agent_pool_name=args.agent_pool_name,
             workspaces=args.workspaces or "*",
             skip_workspace_creation=args.skip_workspace_creation,
             skip_backend_secrets=args.skip_backend_secrets,
@@ -538,7 +543,13 @@ class ScalrClient(APIClient):
         }
         return self.post("environments", data)
 
-    def create_workspace(self, env_id: str, attributes: Dict, vcs_id: Optional[str] = None) -> Dict:
+    def create_workspace(
+        self,
+        env_id: str,
+        attributes: Dict,
+        vcs_id: Optional[str] = None,
+        agent_pool_id: Optional[str] = None
+    ) -> Dict:
         data = {
             "data": {
                 "type": "workspaces",
@@ -551,6 +562,7 @@ class ScalrClient(APIClient):
                         }
                     },
                     "vcs-provider": {"data": {"type": "vcs-providers", "id": vcs_id}} if vcs_id else None,
+                    "agent-pool": {"data": {"type": "agent-pools", "id": agent_pool_id}} if agent_pool_id else None,
                 }
             }
         }
@@ -718,9 +730,11 @@ class MigrationService:
         self.project_id: Optional[str] = None
         self.vcs_id: Optional[str] = None
         self.vcs_data: Optional[TerraformDataSource] = None
-        self.pc_id: Optional[str] = None
+        self.provider_config: Optional[Dict] = None
         self.pc_data: Optional[TerraformDataSource] = None
         self.workspaces_map = {}
+        self.agent_pool_id: Optional[str] = None
+        self.agent_pool_data: Optional[TerraformDataSource] = None
 
         self.load_account_id()
 
@@ -818,11 +832,37 @@ class MigrationService:
             "deletion-protection-enabled": not self.args.disable_deletion_protection,
         }}
 
+    def get_agent_pool_data(self) -> Optional[TerraformDataSource]:
+        """Get agent pool data source if agent pool name is provided."""
+        if self.args.agent_pool_name and not self.agent_pool_data and self.get_agent_pool_id():
+            self.agent_pool_data = TerraformDataSource(
+                "scalr_agent_pool",
+                self.args.agent_pool_name,
+                {"name": self.args.agent_pool_name}
+            )
+            self.resource_manager.add_data_source(self.agent_pool_data)
+        return self.agent_pool_data
+
+    def get_agent_pool_id(self) -> str:
+        """Get agent pool ID from the data source."""
+        if self.args.agent_pool_name and not self.agent_pool_id:
+            agent_pools = self.scalr.get('agent-pools', {"filter[name]": self.args.agent_pool_name})['data']
+            if not len(agent_pools):
+                raise MissingDataError(f"Agent pool with name '{self.args.agent_pool_name}' not found.")
+            agent_pool_id = agent_pools[0]["id"]
+            self.agent_pool_id = agent_pool_id
+            agents = self.scalr.get('agents', {"filter[agent-pool]": agent_pool_id})['data']
+
+            if not len(agents):
+                raise MissingDataError(f"Agent pool with name '{self.args.agent_pool_name}' does not have active agents.")
+
+        return self.agent_pool_id
+
     def create_workspace(
         self,
         env_id: str,
         tf_workspace: Dict,
-        skip_terraform_resource: Optional[bool] = False
+        is_management_workspace: Optional[bool] = False
     ) -> AbstractTerraformResource:
         attributes = tf_workspace["attributes"]
         """Get existing workspace or create a new one."""
@@ -855,7 +895,7 @@ class MigrationService:
         vcs_id = None
         branch = None
         trigger_patterns = None
-        pc_id = self.get_provider_configuration_id()
+        pc_id = self.get_provider_configuration()["id"] if not is_management_workspace else None
         vcs_repo = attributes.get("vcs-repo")
 
         if vcs_repo:
@@ -877,7 +917,9 @@ class MigrationService:
                 trigger_patterns = handle_trigger_patterns(attributes["trigger-patterns"])
                 workspace_attrs["vcs-repo"]["trigger-patterns"] = trigger_patterns
 
-        response = self.scalr.create_workspace(env_id, workspace_attrs, vcs_id)
+        relationships = tf_workspace.get('relationships', {})
+        agent_pool_id = self.get_agent_pool_id() if relationships.get("agent-pool") else None
+        response = self.scalr.create_workspace(env_id, workspace_attrs, vcs_id, agent_pool_id)
 
         ConsoleOutput.success(f"Created workspace '{attributes['name']}'")
 
@@ -916,6 +958,9 @@ class MigrationService:
         if pc_id:
             resource_attributes["provider_configuration"] = HCLObject({"id": self.get_pc_data()})
 
+        if agent_pool_id:
+            resource_attributes["agent_pool_id"] = self.get_agent_pool_data()
+
         workspace_resource = TerraformResource(
             "scalr_workspace",
             attributes["name"],
@@ -926,7 +971,7 @@ class MigrationService:
         if tf_workspace.get('id'):
             self.create_workspace_map(tf_workspace['id'], workspace_resource)
 
-        if not skip_terraform_resource:
+        if not is_management_workspace:
             self.resource_manager.add_resource(workspace_resource)
         
         return workspace_resource
@@ -1209,19 +1254,53 @@ class MigrationService:
         if self.args.vcs_name and not self.vcs_id:
             vcs_provider = self.scalr.get("vcs-providers", {"query": self.args.vcs_name})["data"][0]
             if not vcs_provider:
-                raise VCSMissingError(f"VCS provider with name '{self.args.vcs_name}' not found.")
+                raise MissingDataError(f"VCS provider with name '{self.args.vcs_name}' not found.")
             self.vcs_id = vcs_provider["id"]
 
         return self.vcs_id
 
-    def get_provider_configuration_id(self) -> str:
-        if self.args.pc_name and not self.pc_id:
+    def get_provider_configuration(self) -> Dict:
+        if self.args.pc_name and not self.provider_config:
             pc_provider = self.scalr.get("provider-configurations", {"filter[name]": self.args.pc_name})["data"][0]
             if not pc_provider:
-                raise VCSMissingError(f"Provider configuration with name '{self.args.pc_name}' not found.")
-            self.pc_id = pc_provider["id"]
+                raise MissingDataError(f"Provider configuration with name '{self.args.pc_name}' not found.")
+            self.provider_config = pc_provider
 
-        return self.pc_id
+        return self.provider_config
+
+    def update_provider_configuration(self, env_id: str) -> None:
+        provider_configuration = self.get_provider_configuration()
+        if not provider_configuration:
+            return
+
+        if provider_configuration["attributes"]["is-shared"]:
+            return
+
+        allowed_environments = provider_configuration["relationships"].get('environments')
+        data = allowed_environments.get('data', [])
+
+        for allowed_environment in data:
+            if allowed_environment['id'] == env_id:
+                return
+
+        data.append({
+            "id": env_id,
+            'type': 'environments',
+        })
+
+        attributes = {
+            'data': {
+                'type': 'provider-configurations',
+                'id': provider_configuration["id"],
+                'relationships': {
+                    'environments': {
+                        'data': data
+                    }
+                }
+            }
+        }
+
+        self.scalr.patch(f"provider-configurations/{provider_configuration['id']}", attributes)
 
     def migrate(self):
         ConsoleOutput.section("Preparing migration")
@@ -1229,21 +1308,20 @@ class MigrationService:
 
         # Get organization and create environment
         tf_organization = self.args.tfc_organization
-        organization = self.tfc.get_organization(tf_organization)["data"]
-        if not self.args.scalr_environment:
-            self.args.scalr_environment = organization["attributes"]["name"]
+        self.tfc.get_organization(tf_organization)
 
         project_msg = ''
         if self.args.tfc_project:
             project_msg = f" (project '{self.args.tfc_project}')"
-        ConsoleOutput.info(
-            f"Migrating organization '{tf_organization}'{project_msg} into environment '{self.args.scalr_environment}'"
-        )
 
         # Get project ID if specified
         project_id = self.get_project_id()
         if project_id:
             ConsoleOutput.info(f"Filtering TFC workspaces by project: '{self.args.tfc_project}'")
+
+        ConsoleOutput.info(
+            f"Migrating organization '{tf_organization}'{project_msg} into environment '{self.args.scalr_environment}'"
+        )
 
         # Create management environment and workspace
         ConsoleOutput.info(f"Creating post-management Scalr environment '{self.args.management_env_name}'...")
@@ -1253,12 +1331,13 @@ class MigrationService:
         self.create_workspace(
             management_env["id"],
             self.get_management_workspace_attributes(),
-            skip_terraform_resource=True
+            is_management_workspace=True
         )
 
         # Create or get the main environment
         ConsoleOutput.info(f"Creating destination Scalr environment '{self.args.scalr_environment}'...")
         env = self.create_environment(self.args.scalr_environment)
+        self.update_provider_configuration(env['id'])
 
         # Create backend configuration for the management workspace
         ConsoleOutput.info("Creating remote backend configuration...")
@@ -1361,6 +1440,7 @@ def main():
     parser.add_argument('--tfc-organization', type=str, help='TFC/E organization name')
     parser.add_argument('-v', '--vcs-name', type=str, help='VCS identifier')
     parser.add_argument('--pc-name', type=str, help='Provider configuration name')
+    parser.add_argument('--agent-pool-name', type=str, help='Scalr agent pool name')
     parser.add_argument('-w', '--workspaces', type=str, help='Workspaces to migrate. By default - all')
     parser.add_argument('--skip-workspace-creation', action='store_true', help='Whether to create new workspaces in Scalr. Set to True if the workspace is already created in Scalr.')
     parser.add_argument('--skip-backend-secrets', action='store_true', help='Whether to create shell variables (`SCALR_` and `TFC_`) in Scalr.')

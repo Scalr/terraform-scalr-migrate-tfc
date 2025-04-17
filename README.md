@@ -112,6 +112,7 @@ terraform login account.scalr.io
              --tfc-organization <tfc-org> \
              [-v|--vcs-name <vcs-name>] \
              [--pc-name <pc-name>] \
+             [--agent-pool-name <agent-pool-name>] \
              [-w|--workspaces <workspace-pattern>] \
              [--skip-workspace-creation] \
              [--skip-backend-secrets] \
@@ -132,8 +133,9 @@ terraform login account.scalr.io
 
 ### Optional Arguments
 
-- `-v|--vcs-name`: VCS provider name in Scalr (required if not using `--skip-workspace-creation`)
+- `-v|--vcs-name`: VCS provider name in Scalr (required if not using `--skip-workspace-creation` for VCS driven-workspaces)
 - `--pc-name`: Provider configuration name in Scalr to link to workspaces
+- `--pc-name`: Agent pool name in Scalr to link to workspaces
 - `-w|--workspaces`: Workspace name pattern (supports glob patterns, default: "*")
 - `--skip-workspace-creation`: Skip workspace creation in Scalr (use if workspaces already exist)
 - `--skip-backend-secrets`: Skip creation of shell variables for backend configuration

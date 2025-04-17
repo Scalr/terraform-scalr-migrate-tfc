@@ -1,5 +1,11 @@
 [Unreleased]
 
+[0.3.3] - 2025-04-17
+
+### Added
+- Support for agent pool linking via `--agent-pool-name` argument
+- Automatic updated of the provider configuration environment access of newly created environments
+
 [0.3.2] - 2025-04-16
 
 ### Added
