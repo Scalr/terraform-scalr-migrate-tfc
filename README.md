@@ -61,6 +61,7 @@ chmod +x migrate.sh
 The tool supports multiple ways to provide authentication tokens:
 
 ### Command line arguments:
+Note: The Scalr and TFC tokens can be set as environment variables (see below)
 ```bash
 ./migrate.sh --tfc-token "your-token" --tfc-organization="my-org" --scalr-hostname "account.scalr.io" --scalr-token "your-token"
 ```
@@ -74,7 +75,7 @@ export TFC_TOKEN="your-token"
 
 ### Terraform credentials file (`~/.terraform.d/credentials.tfrc.json`):
 
-When Scalr hostname is know (via parameter  `--scalr-hostname` or `SCALR_HOSTNAME`), the migrator can read the token from locally cached credentials file (usually written by the `terraform login` command).
+When the Scalr hostname is known (via parameter `--scalr-hostname` or `SCALR_HOSTNAME`), the migrator can read the token from the locally cached credentials file (usually written by the `terraform login` command).
 
 ```json
 {
@@ -89,7 +90,7 @@ When Scalr hostname is know (via parameter  `--scalr-hostname` or `SCALR_HOSTNAM
 }
 ```
 
-To use this auth method run two commands first:
+To use this auth method, run two commands first:
 
 Cache TFC token:
 
