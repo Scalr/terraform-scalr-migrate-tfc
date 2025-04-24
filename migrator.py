@@ -94,7 +94,7 @@ class MigratorArgs:
     tfc_project: Optional[str] = None
     management_env_name: str = DEFAULT_MANAGEMENT_ENV_NAME
     disable_deletion_protection: bool = False
-    debug_enabled: bool = False
+    debug_enabled: bool = os.getenv("SCALR_DEBUG_ENABLED", False)
     skip_variables: Optional[str] = None
 
     @classmethod
@@ -324,8 +324,10 @@ class ResourceManager:
         self.data_sources.append(data_source)
 
     def has_resource(self, resource_type: str, name: str) -> bool:
+        converted = name.lower().replace('-', '_')
+
         for existing in self.resources:
-            if existing.resource_type == resource_type and existing.name == name:
+            if existing.resource_type == resource_type and existing.name == converted:
                 return True
 
         return  False
@@ -338,8 +340,10 @@ class ResourceManager:
         return None
 
     def has_data_source(self, resource_type: str, name: str) -> bool:
+        converted = name.lower().replace('-', '_')
+
         for existing in self.data_sources:
-            if existing.resource_type == resource_type and existing.name == name:
+            if existing.resource_type == resource_type and existing.name == converted:
                 return True
 
         return  False
@@ -807,8 +811,10 @@ class MigrationService:
 
         if environment:
             if not skip_terraform:
-                environment_data_source = TerraformDataSource("scalr_environment", name, {"name": name})
-                self.resource_manager.add_data_source(environment_data_source)
+                existing_resource = self.resource_manager.get_resource('scalr_environment', name)
+                if not existing_resource:
+                    environment_data_source = TerraformDataSource("scalr_environment", name, {"name": name})
+                    self.resource_manager.add_data_source(environment_data_source)
             return environment
 
         response = self.scalr.create_environment(name, self.args.account_id)["data"]
@@ -895,7 +901,8 @@ class MigrationService:
         vcs_id = None
         branch = None
         trigger_patterns = None
-        pc_id = self.get_provider_configuration()["id"] if not is_management_workspace else None
+        configuration = self.get_provider_configuration()
+        pc_id = configuration["id"] if not is_management_workspace and configuration else None
         vcs_repo = attributes.get("vcs-repo")
 
         if vcs_repo:
@@ -1001,7 +1008,7 @@ class MigrationService:
         raw_state = self.tfc.make_request(state["hosted-state-download-url"])
         serial = current_scalr_state["data"]["attributes"]["serial"] if current_scalr_state else None
         if serial == raw_state["serial"]:
-            ConsoleOutput.info(f"State with '{serial}' is up-to-date")
+            ConsoleOutput.info(f"State with serial '{serial}' is up-to-date")
             return
 
         raw_state["terraform_version"] = _enforce_max_version(raw_state["terraform_version"],'State file')

@@ -99,73 +99,51 @@ show_help() {
 ARGS=()
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --scalr-hostname)
-            export SCALR_HOSTNAME="$2"
-            shift 2
-            ;;
-        --scalr-token)
-            export SCALR_TOKEN="$2"
-            shift 2
-            ;;
-        --scalr-environment)
-            export SCALR_ENVIRONMENT="$2"
-            shift 2
-            ;;
-        --tfc-hostname)
-            export TFC_HOSTNAME="$2"
-            shift 2
-            ;;
-        --tfc-token)
-            export TFC_TOKEN="$2"
-            shift 2
-            ;;
-        --tfc-organization)
-            export TFC_ORGANIZATION="$2"
-            shift 2
-            ;;
-        --tfc-project)
-            export TFC_PROJECT="$2"
-            shift 2
-            ;;
-        -v|--vcs-name)
-            export SCALR_VCS_NAME="$2"
-            shift 2
-            ;;
-        --pc-name)
-            export SCALR_PC_NAME="$2"
-            shift 2
-            ;;
-        -w|--workspaces)
-            export WORKSPACES="$2"
-            shift 2
-            ;;
-        --skip-workspace-creation)
-            export SKIP_WORKSPACE_CREATION=true
+        # Handle equal-sign format first
+        -v=*|-w=*|--*=*)
+            # Extract parameter name and value
+            param="${1#-}"   # Remove first -
+            param="${param#-}"  # Remove second - if it exists
+            param="${param%=*}"  # Remove =value part
+            value="${1#*=}"
+            # Convert parameter name to environment variable name
+            env_var=$(echo "$param" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
+            # Handle special cases
+            case $1 in
+                -v=*|--vcs-name=*) env_var="SCALR_VCS_NAME" ;;
+                -w=*|--workspaces=*) env_var="WORKSPACES" ;;
+            esac
+            export "$env_var"="$value"
             shift
             ;;
-        --skip-backend-secrets)
-            export SKIP_BACKEND_SECRETS=true
-            shift
-            ;;
-        --skip-tfc-lock)
-            export SKIP_TFC_LOCK=true
-            shift
-            ;;
-        --management-env-name)
-            export MANAGEMENT_ENV_NAME="$2"
+        # Handle space-separated format
+        --scalr-hostname|--scalr-token|--scalr-environment|--tfc-hostname|--tfc-token|--tfc-organization|--tfc-project|--vcs-name|--pc-name|--workspaces|--management-env-name|--skip-variables|--agent-pool-name)
+            param="${1#--}"  # Remove leading --
+            env_var=$(echo "$param" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
+            case $1 in
+                -v|--vcs-name) env_var="SCALR_VCS_NAME" ;;
+                -w|--workspaces) env_var="WORKSPACES" ;;
+            esac
+            export "$env_var"="$2"
+            echo "DEBUG: Setting $env_var=$2"
             shift 2
             ;;
-        --disable-deletion-protection)
-            export DISABLE_DELETION_PROTECTION=true
+        # Handle short options with space
+        -v|-w)
+            case $1 in
+                -v) env_var="SCALR_VCS_NAME" ;;
+                -w) env_var="WORKSPACES" ;;
+            esac
+            export "$env_var"="$2"
+            echo "DEBUG: Setting $env_var=$2"
+            shift 2
+            ;;
+        # Handle boolean flags
+        --skip-workspace-creation|--skip-backend-secrets|--skip-tfc-lock|--disable-deletion-protection)
+            param="${1#--}"  # Remove leading --
+            env_var=$(echo "$param" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
+            export "$env_var"=true
             shift
-            ;;
-        --skip-variables)
-            export SKIP_VARIABLES="$2"
-            shift 2
-            ;;
-        --agent-pool-name)
-            export SCALR_AGENT_POOL_NAME="$2"
-            shift 2
             ;;
         --help)
             show_help
@@ -178,6 +156,15 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Set default values if not provided
+if [ -z "$SCALR_ENVIRONMENT" ]; then
+    if [ -n "$TFC_PROJECT" ]; then
+        export SCALR_ENVIRONMENT="$TFC_PROJECT"
+    else
+        export SCALR_ENVIRONMENT="$TFC_ORGANIZATION"
+    fi
+fi
+
 # Read credentials from file if not provided
 read_tfrc_credentials
 
@@ -186,10 +173,6 @@ validate_required_params
 
 # Set default values if not provided
 MANAGEMENT_ENV_NAME=${MANAGEMENT_ENV_NAME:-$DEFAULT_MANAGEMENT_ENV_NAME}
-
-if [ -z "$SCALR_ENVIRONMENT" ]; then
-    export SCALR_ENVIRONMENT=${TFC_PROJECT:-$TFC_ORGANIZATION}
-fi
 
 install_dependencies=false
 # Create and activate virtual environment
@@ -245,8 +228,7 @@ if [ $? -eq 0 ]; then
     # Example: Navigate to the generated Terraform directory
     cd "./generated-terraform/$SCALR_ENVIRONMENT" || exit 1
 
-    pwd
-    terraform fmt
+    terraform fmt -list=false
     terraform init
     terraform apply
 
