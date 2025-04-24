@@ -1,19 +1,7 @@
-# Terraform Cloud/Enterprise to Scalr Migration Tool
+# Overview
 
-This tool helps migrate workspaces from Terraform Cloud/Enterprise (TFC/E) to Scalr. It handles:
+This script will migrate the following objects from TFC to Scalr in bulk:
 - Workspace migration with all attributes
-- State file migration
-- Variable migration (including sensitive variables from plan files)
-- VCS provider configuration
-- Provider configuration linking
-- Remote state consumers
-- Trigger patterns handling
-- Workspace locking in TFC/E after migration
-
-## Features
-
-- Migrates workspaces from Terraform Cloud/Enterprise to Scalr
-- Preserves workspace configurations, including:
   - VCS settings and trigger patterns
   - Terraform version
   - Execution mode (remote/local)
@@ -21,27 +9,27 @@ This tool helps migrate workspaces from Terraform Cloud/Enterprise (TFC/E) to Sc
   - Auto-apply settings
   - Remote state sharing
   - Variable values (including sensitive ones when available)
-- Handles workspace dependencies and remote state consumers
-- Generates Terraform configuration for the migrated resources
-- Supports workspace filtering using glob patterns
-- Automatically configures Terraform credentials
-- Creates a management workspace for state management
-- Supports project-based workspace filtering
-- Properly handles multiline trigger patterns using heredoc (EOT) format
-- Preserves state history
-- Handles sensitive and non-sensitive variables
-- Supports workspace locking
-- Creates a management environment and workspace in Scalr
-- Generates Terraform resources and import commands
-- Supports wildcard workspace selection
+  - Workspace dependencies
+- State file migration
+  - Preserves state history
+- Variable migration (including sensitive variables from plan files)
+- VCS provider configuration
+- Provider configuration linking
+- Remote state consumers
+- Trigger patterns handling
+- Workspace locking in TFC/E after migration to avoid conflicting runs
+
+At the end, the Scalr Terraform provider code will be generated to continue to manage the Scalr objects in the future. A Scalr management environment and workspace will be created to use for the management of the Scalr environments and workspaces.
+
+# Usage
 
 ## Prerequisites
 
 - Python 3.12 or higher
 - Terraform Cloud/Enterprise credentials
 - Scalr credentials
-- VCS provider configured in Scalr (if migrating workspaces with VCS)
-- Provider configuration in Scalr (if linking workspaces to provider configurations)
+- [VCS provider configured in Scalr](https://docs.scalr.io/docs/vcs-providers) (if migrating workspaces with VCS)
+- [Provider configuration in Scalr](https://docs.scalr.io/docs/provider-configurations) (if linking workspaces to provider configurations)
 
 ## Installation
 
@@ -58,7 +46,7 @@ chmod +x migrate.sh
 
 ## Authentication
 
-The tool supports multiple ways to provide authentication tokens:
+Authentication can be done through the command line, setting the credentials as environment variables, or in the Terraform credentials file.
 
 ### Command line arguments:
 Note: The Scalr and TFC tokens can be set as environment variables (see below)
@@ -103,25 +91,10 @@ Cache Scalr token (replace `account` with the actual account name):
 terraform login account.scalr.io
 ```
 
-## Usage
+## Execution
 
 ```bash
-./migrate.sh --scalr-hostname <scalr-hostname> \
-             --scalr-token <scalr-token> \
-             --tfc-hostname <tfc-hostname> \
-             --tfc-token <tfc-token> \
-             --tfc-organization <tfc-org> \
-             [-v|--vcs-name <vcs-name>] \
-             [--pc-name <pc-name>] \
-             [--agent-pool-name <agent-pool-name>] \
-             [-w|--workspaces <workspace-pattern>] \
-             [--skip-workspace-creation] \
-             [--skip-backend-secrets] \
-             [--skip-tfc-lock] \
-             [--management-env-name <name>] \
-             [--disable-deletion-protection] \
-             [--tfc-project <project-name>] \
-             [--skip-variables <pattern>]
+./migrate.sh --tfc-token "your-token" --tfc-organization="my-org" --scalr-hostname "your-account.scalr.io" --scalr-token "your-token"
 ```
 
 ### Required Arguments
