@@ -121,7 +121,7 @@ terraform login account.scalr.io
 
 ## Generated Files
 
-The tool generates the following files in the `generated-terraform/$SCALR_ENVIRONMENT` directory:
+The tool generates the following files in the `generated-terraform/$SCALR_ENVIRONMENT` directory so you can manage your workspaces with the Scalr Terraform provider:
 
 - `main.tf`: Contains all Terraform resources
 - `backend.tf`: Remote backend configuration
@@ -129,7 +129,7 @@ The tool generates the following files in the `generated-terraform/$SCALR_ENVIRO
 
 ### Post-Migration
 
-After successful migration, the tool will execute terraform apply and imports all previously created resources in the management workspace state file.
+After successful migration, the tool will execute terraform apply and import all previously created resources in the management workspace state file.
 
 ## Limitations
 
