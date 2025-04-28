@@ -1,47 +1,35 @@
-# Terraform Cloud/Enterprise to Scalr Migration Tool
+# TFC to Scalr Migration Overview
 
-This tool helps migrate workspaces from Terraform Cloud/Enterprise (TFC/E) to Scalr. It handles:
-- Workspace migration with all attributes
-- State file migration
-- Variable migration (including sensitive variables from plan files)
-- VCS provider configuration
-- Provider configuration linking
-- Remote state consumers
-- Trigger patterns handling
-- Workspace locking in TFC/E after migration
-
-## Features
-
-- Migrates workspaces from Terraform Cloud/Enterprise to Scalr
-- Preserves workspace configurations, including:
+This script will migrate the following objects from TFC to Scalr in bulk:
+- Workspaces with all attributes
   - VCS settings and trigger patterns
   - Terraform version
   - Execution mode (remote/local)
   - Working directory
   - Auto-apply settings
   - Remote state sharing
-  - Variable values (including sensitive ones when available)
-- Handles workspace dependencies and remote state consumers
-- Generates Terraform configuration for the migrated resources
-- Supports workspace filtering using glob patterns
-- Automatically configures Terraform credentials
-- Creates a management workspace for state management
-- Supports project-based workspace filtering
-- Properly handles multiline trigger patterns using heredoc (EOT) format
-- Preserves state history
-- Handles sensitive and non-sensitive variables
-- Supports workspace locking
-- Creates a management environment and workspace in Scalr
-- Generates Terraform resources and import commands
-- Supports wildcard workspace selection
+  - Variable values (including sensitive variables when available)
+  - Workspace dependencies
+- State file migration
+  - Preserves state history
+- Variable migration (including sensitive variables from plan files)
+- VCS provider configuration
+- Provider configuration linking
+- Remote state consumers
+- Trigger patterns handling
+- Workspace locking in TFC/E after migration to avoid conflicting runs
+
+At the end of the migration, the Scalr Terraform provider code will be generated, allowing you to continue managing Scalr objects with code. A Scalr management environment and workspace will be created for managing Scalr environments and workspaces.
+
+# Usage
 
 ## Prerequisites
 
 - Python 3.12 or higher
 - Terraform Cloud/Enterprise credentials
 - Scalr credentials
-- VCS provider configured in Scalr (if migrating workspaces with VCS)
-- Provider configuration in Scalr (if linking workspaces to provider configurations)
+- [VCS provider configured in Scalr](https://docs.scalr.io/docs/vcs-providers) (if migrating workspaces with VCS)
+- [Provider configuration in Scalr](https://docs.scalr.io/docs/provider-configurations) (if linking workspaces to provider configurations)
 
 ## Installation
 
@@ -58,9 +46,10 @@ chmod +x migrate.sh
 
 ## Authentication
 
-The tool supports multiple ways to provide authentication tokens:
+Authentication can be performed through the command line by setting the credentials as environment variables or in the Terraform credentials file.
 
 ### Command line arguments:
+Note: The Scalr and TFC tokens can be set as environment variables (see below)
 ```bash
 ./migrate.sh --tfc-token "your-token" --tfc-organization="my-org" --scalr-hostname "account.scalr.io" --scalr-token "your-token"
 ```
@@ -74,7 +63,7 @@ export TFC_TOKEN="your-token"
 
 ### Terraform credentials file (`~/.terraform.d/credentials.tfrc.json`):
 
-When Scalr hostname is know (via parameter  `--scalr-hostname` or `SCALR_HOSTNAME`), the migrator can read the token from locally cached credentials file (usually written by the `terraform login` command).
+When the Scalr hostname is known (via parameter `--scalr-hostname` or `SCALR_HOSTNAME`), the migrator can read the token from the locally cached credentials file (usually written by the `terraform login` command).
 
 ```json
 {
@@ -89,7 +78,7 @@ When Scalr hostname is know (via parameter  `--scalr-hostname` or `SCALR_HOSTNAM
 }
 ```
 
-To use this auth method run two commands first:
+To use this auth method, run two commands first:
 
 Cache TFC token:
 
@@ -102,25 +91,10 @@ Cache Scalr token (replace `account` with the actual account name):
 terraform login account.scalr.io
 ```
 
-## Usage
+## Execution
 
 ```bash
-./migrate.sh --scalr-hostname <scalr-hostname> \
-             --scalr-token <scalr-token> \
-             --tfc-hostname <tfc-hostname> \
-             --tfc-token <tfc-token> \
-             --tfc-organization <tfc-org> \
-             [-v|--vcs-name <vcs-name>] \
-             [--pc-name <pc-name>] \
-             [--agent-pool-name <agent-pool-name>] \
-             [-w|--workspaces <workspace-pattern>] \
-             [--skip-workspace-creation] \
-             [--skip-backend-secrets] \
-             [--skip-tfc-lock] \
-             [--management-env-name <name>] \
-             [--disable-deletion-protection] \
-             [--tfc-project <project-name>] \
-             [--skip-variables <pattern>]
+./migrate.sh --tfc-token "your-token" --tfc-organization="my-org" --scalr-hostname "your-account.scalr.io" --scalr-token "your-token"
 ```
 
 ### Required Arguments
@@ -147,7 +121,7 @@ terraform login account.scalr.io
 
 ## Generated Files
 
-The tool generates the following files in the `generated-terraform/$SCALR_ENVIRONMENT` directory:
+The tool generates the following files in the `generated-terraform/$SCALR_ENVIRONMENT` directory so you can manage your workspaces with the Scalr Terraform provider:
 
 - `main.tf`: Contains all Terraform resources
 - `backend.tf`: Remote backend configuration
@@ -155,7 +129,7 @@ The tool generates the following files in the `generated-terraform/$SCALR_ENVIRO
 
 ### Post-Migration
 
-After successful migration, the tool will execute terraform apply and imports all previously created resources in the management workspace state file.
+After successful migration, the tool will execute terraform apply and import all previously created resources in the management workspace state file.
 
 ## Limitations
 
