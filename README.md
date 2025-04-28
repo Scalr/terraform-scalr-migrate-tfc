@@ -1,14 +1,14 @@
-# Overview
+# TFC to Scalr Migration Overview
 
 This script will migrate the following objects from TFC to Scalr in bulk:
-- Workspace migration with all attributes
+- Workspaces with all attributes
   - VCS settings and trigger patterns
   - Terraform version
   - Execution mode (remote/local)
   - Working directory
   - Auto-apply settings
   - Remote state sharing
-  - Variable values (including sensitive ones when available)
+  - Variable values (including sensitive variables when available)
   - Workspace dependencies
 - State file migration
   - Preserves state history
@@ -19,7 +19,7 @@ This script will migrate the following objects from TFC to Scalr in bulk:
 - Trigger patterns handling
 - Workspace locking in TFC/E after migration to avoid conflicting runs
 
-At the end, the Scalr Terraform provider code will be generated to continue to manage the Scalr objects in the future. A Scalr management environment and workspace will be created to use for the management of the Scalr environments and workspaces.
+At the end of the migration, the Scalr Terraform provider code will be generated, allowing you to continue managing Scalr objects with code. A Scalr management environment and workspace will be created for managing Scalr environments and workspaces.
 
 # Usage
 
@@ -46,7 +46,7 @@ chmod +x migrate.sh
 
 ## Authentication
 
-Authentication can be done through the command line, setting the credentials as environment variables, or in the Terraform credentials file.
+Authentication can be performed through the command line by setting the credentials as environment variables or in the Terraform credentials file.
 
 ### Command line arguments:
 Note: The Scalr and TFC tokens can be set as environment variables (see below)
