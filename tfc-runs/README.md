@@ -19,7 +19,7 @@ python3 runs.py list-all
 
 Workspace athena-us-east has had 22 runs.
 Workspace vpc-dev has had 109 runs.
-Workspaces vpc-prod has had 120 runs.
+Workspace vpc-prod has had 120 runs.
 Workspace taco-us-west has had 523 runs.
 Workspace vending-machine has had 78 runs.
 ---------------------------
