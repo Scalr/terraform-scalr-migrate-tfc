@@ -17,11 +17,11 @@ Scalr does not charge for all runs. This script will return some runs for which 
 ```
 python3 runs.py list-all
 
-Workspace demo1 has had 2 runs.
-Workspace VPC has had 5 runs.
-Workspaces3 has had 0 runs.
-Workspace MigrationDemo has had 2 runs.
-Workspace Scalr has had 1 runs.
+Workspace athena-us-east has had 22 runs.
+Workspace vpc-dev has had 109 runs.
+Workspaces vpc-prod has had 120 runs.
+Workspace taco-us-west has had 523 runs.
+Workspace vending-machine has had 78 runs.
 ---------------------------
-The total runs count across all organizations: 10
+The total runs count across all organizations: 852
 ```
