@@ -6,7 +6,7 @@ Scalr does not charge for all runs. This script will return some runs for which 
 ## Requirements:
 * `python3` and `pip3`
 * `pip3 install click requests --quiet`
-* `terraform login` has been performed from the the device this is being exeuted on (script uses the well known credentials file)
+* `terraform login` has been performed from the the device this is being executed on (script uses the well known credentials file)
 
 ## Usage
 
