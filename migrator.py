@@ -32,6 +32,9 @@ class RateLimitError(Exception):
 class MissingDataError(Exception):
     pass
 
+class MissingMappingError(Exception):
+    pass
+
 def handle_rate_limit(response: urllib.response.addinfourl) -> None:
     """Handle rate limit responses and wait if necessary."""
     if response.status == 429:  # Too Many Requests
@@ -420,11 +423,11 @@ class APIClient:
     def get_by_short_url(self, short_url: str) -> Dict:
         return self.make_request(f"https://{self.hostname}/{short_url}")
 
-    def make_request(self, url: str, method: str = "GET", data: Dict = None) -> Dict:
+    def make_request(self, url: str, method: str = "GET", data: Dict = None, headers: dict = None) -> Dict:
         if data:
             data = json.dumps(data).encode('utf-8')
         
-        req = urllib.request.Request(url, data=data, method=method, headers=self.headers)
+        req = urllib.request.Request(url, data=data, method=method, headers=headers if headers else self.headers)
         
         with urllib.request.urlopen(req) as response:
             if response.code != 204:
@@ -432,20 +435,27 @@ class APIClient:
             return {}
 
     def get(self, route: str, filters: Optional[Dict] = None) -> Dict:
-        url = f"https://{self.hostname}/api/{self.api_version}/{route}{self._encode_filters(filters)}"
+        url = f"https://{self.hostname}{self.api_version}{route}{self._encode_filters(filters)}"
         return self.make_request(url)
 
     def post(self, route: str, data: Dict) -> Dict:
-        url = f"https://{self.hostname}/api/{self.api_version}/{route}"
+        url = f"https://{self.hostname}{self.api_version}{route}"
         return self.make_request(url, method="POST", data=data)
 
     def patch(self, route: str, data: Dict) -> Dict:
-        url = f"https://{self.hostname}/api/{self.api_version}/{route}"
+        url = f"https://{self.hostname}{self.api_version}{route}"
         return self.make_request(url, method="PATCH", data=data)
 
 class TFCClient(APIClient):
     def __init__(self, hostname: str, token: str):
-        super().__init__(hostname, token, "v2")
+        self.cached_version = None
+
+        if not self.cached_version:
+            url = f"https://{hostname}/.well-known/terraform.json"
+            well_known = self.make_request(url, method="GET", headers={'Accept': "application/json"})
+            self.cached_version = well_known.get("tfe.v2", "/api/v2/")
+
+        super().__init__(hostname, token, self.cached_version)
 
     def get_organization(self, org_name: str) -> Dict:
         return self.get(f"organizations/{org_name}")
@@ -492,7 +502,7 @@ class TFCClient(APIClient):
 
 class ScalrClient(APIClient):
     def __init__(self, hostname: str, token: str):
-        super().__init__(hostname, token, "iacp/v3")
+        super().__init__(hostname, token, "/api/iacp/v3/")
 
     def update_consumers(self, workspace_id, consumers: list[str]):
         relationships = []
@@ -747,7 +757,7 @@ class MigrationService:
 
     def get_mapped_scalr_workspace_id(self, tfc_workspace_id) -> AbstractTerraformResource:
         if not self.workspaces_map.get(tfc_workspace_id):
-            raise RuntimeError(f"Workspace {tfc_workspace_id} not found.")
+            raise MissingMappingError(f"The Scalr workspace for the source TFC workspace {tfc_workspace_id} does not exist or was not created within the current runtime.")
         return self.workspaces_map[tfc_workspace_id]
 
     def load_account_id(self):
@@ -910,18 +920,18 @@ class MigrationService:
             branch = vcs_repo["branch"] if vcs_repo.get("branch") in vcs_repo else None
 
             workspace_attrs["vcs-repo"] = {
-                "identifier": vcs_repo["display-identifier"],
-                "dry-runs-enabled": attributes["speculative-enabled"],
-                "trigger-prefixes": attributes["trigger-prefixes"],
+                "identifier": vcs_repo["identifier"],
+                "dry-runs-enabled": attributes.get("speculative-enabled", True),
+                "trigger-prefixes": attributes.get("trigger-prefixes", vcs_repo.get("trigger-prefixes", [])),
                 "branch": branch,
                 "ingress-submodules": vcs_repo["ingress-submodules"],
             }
 
-            if attributes.get("trigger-prefixes"):
-                workspace_attrs["vcs-repo"]["trigger-prefixes"] = attributes["trigger-prefixes"]
-            
             if attributes.get("trigger-patterns"):
                 trigger_patterns = handle_trigger_patterns(attributes["trigger-patterns"])
+                workspace_attrs["vcs-repo"]["trigger-patterns"] = trigger_patterns
+            elif vcs_repo.get("trigger-patterns"):
+                trigger_patterns = vcs_repo.get("trigger-patterns", [])
                 workspace_attrs["vcs-repo"]["trigger-patterns"] = trigger_patterns
 
         relationships = tf_workspace.get('relationships', {})
@@ -950,7 +960,7 @@ class MigrationService:
 
         if vcs_repo:
             resource_attributes["vcs_repo"] = {
-                "identifier": vcs_repo["display-identifier"],
+                "identifier": vcs_repo["identifier"],
                 "dry_runs_enabled": attributes["speculative-enabled"],
                 "branch": branch,
                 "ingress_submodules": vcs_repo["ingress-submodules"],
@@ -1089,7 +1099,7 @@ class MigrationService:
                 if attributes["category"] == "terraform" or var_key.startswith('TF_VAR_'):
                     msg += ", will try to create it from the plan file"
                     skipped_sensitive_vars.update({attributes["key"]: attributes})
-                ConsoleOutput.warning(msg)
+                ConsoleOutput.info(msg)
                 continue
 
             try:
@@ -1119,6 +1129,7 @@ class MigrationService:
                     "category": attributes["category"],
                     "workspace_id": workspace,
                     "hcl": attributes["hcl"],
+                    "sensitive": False,
                 },
             )
             var_resource.id = response["data"]["id"]
@@ -1158,6 +1169,7 @@ class MigrationService:
                                 "category": 'terraform',
                                 "workspace_id": workspace,
                                 "hcl": skipped_sensitive_vars[var]["hcl"],
+                                "sensitive": True,
                             },
                         )
 
@@ -1392,7 +1404,8 @@ class MigrationService:
             if not next_page:
                 break
 
-        ConsoleOutput.section("Post-migrating state consumers")
+        if len(workspace_state_consumers):
+            ConsoleOutput.section("Post-migrating state consumers")
         for tfc_id, consumers_data in workspace_state_consumers.items():
             try:
                 scalr_id = self.get_mapped_scalr_workspace_id(tfc_id).id
@@ -1411,6 +1424,10 @@ class MigrationService:
                         'scalr_workspace',
                         consumers_data['workspace_name']
                     ).add_attribute('remote_state_consumers', consumer_resources)
+                    ConsoleOutput.info(f"Updated state consumers for workspace '{scalr_id}'...")
+            except MissingMappingError as e:
+                ConsoleOutput.warning(f"Unable to post-migrate state consumers. {e}")
+                continue
             except RuntimeError as e:
                 ConsoleOutput.warning(e.args[0])
                 continue
