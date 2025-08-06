@@ -643,7 +643,7 @@ class ScalrClient(APIClient):
         return response
 
 def _enforce_max_version(tf_version: str, workspace_name) -> str:
-    if version.parse(tf_version) > version.parse(MAX_TERRAFORM_VERSION):
+    if  tf_version == "latest" or version.parse(tf_version) > version.parse(MAX_TERRAFORM_VERSION):
         ConsoleOutput.warning(f"Warning: {workspace_name} uses Terraform {tf_version}. "
               f"Downgrading to {MAX_TERRAFORM_VERSION}")
         tf_version = MAX_TERRAFORM_VERSION
@@ -839,7 +839,8 @@ class MigrationService:
         return response
 
     def get_management_workspace_attributes(self):
-        return {"attributes": {
+        return {
+            "attributes": {
             "name": self.args.management_workspace_name,
             "vcs-provider-id": self.args.vcs_name,
             "terraform-version": MAX_TERRAFORM_VERSION,
