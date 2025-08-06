@@ -109,7 +109,7 @@ terraform login account.scalr.io
 
 - `-v|--vcs-name`: VCS provider name in Scalr (required if not using `--skip-workspace-creation` for VCS driven-workspaces)
 - `--pc-name`: Provider configuration name in Scalr to link to workspaces
-- `--pc-name`: Agent pool name in Scalr to link to workspaces
+- `--agent-pool-name`: Agent pool name in Scalr to link to workspaces
 - `-w|--workspaces`: Workspace name pattern (supports glob patterns, default: "*")
 - `--skip-workspace-creation`: Skip workspace creation in Scalr (use if workspaces already exist)
 - `--skip-backend-secrets`: Skip creation of shell variables for backend configuration
