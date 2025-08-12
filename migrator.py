@@ -530,7 +530,7 @@ class ScalrClient(APIClient):
 
     def get_workspace(self, environment_id, name: str) -> Optional[Dict]:
         try:
-            response = self.get("workspaces", {"query": name, "filter[environment]": environment_id})
+            response = self.get("workspaces", {"filter[name]": name, "filter[environment]": environment_id})
             workspaces = response.get("data", [])
 
             return workspaces[0] if workspaces else None
