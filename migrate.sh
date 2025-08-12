@@ -1,19 +1,88 @@
 #!/bin/bash
 
+# Cross-platform migration script for Windows and Linux/macOS
+# Supports Git Bash, WSL, Cygwin, MSYS2 on Windows and native bash on Unix-like systems
+# Automatically detects Python 3.x installation and handles platform-specific paths
+
 set -e
 
-# Ensure Python 3.12 is available
-if ! command -v python3.12 &> /dev/null; then
-    echo "Python 3.12 is required but not found. Please install Python 3.12 first."
-    exit 1
-fi
+# Detect operating system
+detect_os() {
+    case "$(uname -s)" in
+        CYGWIN*|MINGW32*|MINGW64*|MSYS*) OS="windows" ;;
+        *) OS="unix" ;;
+    esac
+}
+
+# Find Python executable
+find_python() {
+    local python_cmd=""
+    
+    # Try different Python commands in order of preference
+    for cmd in python3.12 python3 python; do
+        if command_exists "$cmd"; then
+            # Check if it's Python 3.x
+            local version
+            version=$("$cmd" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
+            local major_version
+            major_version=$(echo "$version" | cut -d. -f1)
+            if [ "$major_version" = "3" ]; then
+                python_cmd="$cmd"
+                break
+            fi
+        fi
+    done
+    
+    if [ -z "$python_cmd" ]; then
+        echo "Python 3.x is required but not found. Please install Python 3.x first."
+        exit 1
+    fi
+    
+    echo "$python_cmd"
+}
+
+# Get user home directory cross-platform
+get_home_dir() {
+    if [ "$OS" = "windows" ]; then
+        echo "${USERPROFILE:-$HOME}"
+    else
+        echo "$HOME"
+    fi
+}
+
+# Activate virtual environment cross-platform
+activate_venv() {
+    if [ "$OS" = "windows" ]; then
+        source venv/Scripts/activate
+    else
+        source venv/bin/activate
+    fi
+}
+
+# Check if command exists cross-platform
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# Initialize OS detection and Python command
+detect_os
+PYTHON_CMD=$(find_python)
+USER_HOME=$(get_home_dir)
 
 # Function to read credentials from file
 read_tfrc_credentials() {
-    local credentials_file="$HOME/.terraform.d/credentials.tfrc.json"
+    local credentials_file="$USER_HOME/.terraform.d/credentials.tfrc.json"
     if [ -f "$credentials_file" ]; then
+        # Check if jq is available
+        if ! command_exists "jq"; then
+            echo "Warning: jq is not available. Cannot read credentials from $credentials_file"
+            echo "Please install jq or provide tokens manually via command line arguments."
+            return
+        fi
+        
         # Read Scalr token
-        local scalr_token=$(jq -r ".credentials.\"$SCALR_HOSTNAME\".token" "$credentials_file" 2>/dev/null)
+        local scalr_token
+        scalr_token=$(jq -r ".credentials.\"$SCALR_HOSTNAME\".token" "$credentials_file" 2>/dev/null)
         if [ "$scalr_token" != "null" ]; then
             export SCALR_TOKEN="$scalr_token"
         fi
@@ -23,7 +92,8 @@ read_tfrc_credentials() {
         fi
 
         # Read TFC token
-        local tfc_token=$(jq -r ".credentials.\"$TFC_HOSTNAME\".token" "$credentials_file" 2>/dev/null)
+        local tfc_token
+        tfc_token=$(jq -r ".credentials.\"$TFC_HOSTNAME\".token" "$credentials_file" 2>/dev/null)
         if [ "$tfc_token" != "null" ]; then
             export TFC_TOKEN="$tfc_token"
         fi
@@ -178,12 +248,12 @@ install_dependencies=false
 # Create and activate virtual environment
 if [ ! -d "venv" ]; then
     echo "Creating virtual environment..."
-    python3.12 -m venv venv
+    "$PYTHON_CMD" -m venv venv
     install_dependencies=true
 fi
 
 echo "Activating virtual environment..."
-source venv/bin/activate
+activate_venv
 
 # Install dependencies only on first execution
 if [ "$install_dependencies" = true ]; then
@@ -192,7 +262,7 @@ if [ "$install_dependencies" = true ]; then
 fi
 
 # Build the command
-CMD="python3.12 migrator.py"
+CMD="\"$PYTHON_CMD\" migrator.py"
 CMD="$CMD --scalr-hostname \"$SCALR_HOSTNAME\""
 CMD="$CMD --scalr-token \"$SCALR_TOKEN\""
 CMD="$CMD --scalr-environment \"$SCALR_ENVIRONMENT\""
@@ -226,7 +296,8 @@ if [ $? -eq 0 ]; then
     echo "Starting post-migration steps..."
 
     # Example: Navigate to the generated Terraform directory
-    cd "./generated-terraform/$SCALR_ENVIRONMENT" || exit 1
+    terraform_dir="./generated-terraform/$SCALR_ENVIRONMENT"
+    cd "$terraform_dir" || exit 1
 
     terraform fmt -list=false
     terraform init
