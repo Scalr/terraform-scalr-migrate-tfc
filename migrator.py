@@ -76,13 +76,13 @@ def make_request(
             if e.code == 429:
                 handle_rate_limit(e)
                 if attempt == retries - 1:
-                    raise
+                    raise APIError(e)
                 time.sleep(RATE_LIMIT_DELAY)
             else:
-                raise
+                raise APIError(e)
         except Exception:
             if attempt == retries - 1:
-                raise
+                raise APIError(e)
             time.sleep(RATE_LIMIT_DELAY)
 
 @dataclass
@@ -487,7 +487,7 @@ class TFCClient(APIClient):
             return projects[0] if projects else None
         except urllib.error.HTTPError as e:
             if e.code != 404:
-                raise
+                raise APIError(e)
             return None
 
     def get_workspace_vars(self, org_name: str, workspace_name: str) -> Dict:
@@ -537,7 +537,7 @@ class ScalrClient(APIClient):
             return environments[0] if environments else None
         except urllib.error.HTTPError as e:
             if e.code != 404:
-                raise
+                raise APIError(e)
 
     def get_workspace(self, environment_id, name: str) -> Optional[Dict]:
         try:
@@ -547,7 +547,7 @@ class ScalrClient(APIClient):
             return workspaces[0] if workspaces else None
         except urllib.error.HTTPError as e:
             if e.code != 404:
-                raise
+                raise APIError(e)
 
     def create_environment(self, name: str, account_id: str) -> Dict:
         data = {
@@ -1010,7 +1010,7 @@ class MigrationService:
             return self.scalr.get(f"workspaces/{workspace_id}/current-state-version")
         except urllib.error.HTTPError as e:
             if e.code != 404:
-                raise
+                raise APIError(e)
 
     def create_state(self, tf_workspace: Dict, workspace: AbstractTerraformResource) -> None:
         current_scalr_state = self.get_current_state(workspace.id)
@@ -1130,7 +1130,7 @@ class MigrationService:
                     attributes["description"],
                     relationships,
                 )
-            except urllib.error.HTTPError as e:
+            except APIError as e:
                 if e.code == 422:
                     ConsoleOutput.info(f"Variable '{attributes['key']}' already exists")
                     continue
@@ -1449,7 +1449,7 @@ class MigrationService:
             except RuntimeError as e:
                 ConsoleOutput.warning(e.args[0])
                 continue
-            except urllib.error.HTTPError as e:
+            except APIError as e:
                 ConsoleOutput.error(f"Unable to update remote state consumers: {e}")
                 continue
 
