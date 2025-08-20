@@ -38,6 +38,7 @@ class MissingMappingError(Exception):
 class APIError(Exception):
     def __init__(self, error: urllib.error.HTTPError) -> None:
         self.api_error = json.loads(error.read().decode('utf-8'))["errors"][0]["detail"]
+        self.code = error.code
 
     def __str__(self) -> str:
         return self.api_error
@@ -1252,7 +1253,7 @@ class MigrationService:
                     "Created by migrator",
                     account_relationships
                 )
-            except urllib.error.HTTPError as e:
+            except APIError as e:
                 if e.code == 422:
                     ConsoleOutput.info(f"Variable '{key}' already exists")
                     continue
