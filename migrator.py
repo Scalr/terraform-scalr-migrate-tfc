@@ -35,6 +35,13 @@ class MissingDataError(Exception):
 class MissingMappingError(Exception):
     pass
 
+class APIError(Exception):
+    def __init__(self, error: urllib.error.HTTPError) -> None:
+        self.api_error = json.loads(error.read().decode('utf-8'))["errors"][0]["detail"]
+
+    def __str__(self) -> str:
+        return self.api_error
+
 def handle_rate_limit(response: urllib.response.addinfourl) -> None:
     """Handle rate limit responses and wait if necessary."""
     if response.status == 429:  # Too Many Requests
@@ -428,11 +435,14 @@ class APIClient:
             data = json.dumps(data).encode('utf-8')
         
         req = urllib.request.Request(url, data=data, method=method, headers=headers if headers else self.headers)
-        
-        with urllib.request.urlopen(req) as response:
-            if response.code != 204:
-                return json.loads(response.read().decode('utf-8'))
-            return {}
+
+        try:
+            with urllib.request.urlopen(req) as response:
+                if response.code != 204:
+                    return json.loads(response.read().decode('utf-8'))
+                return {}
+        except urllib.error.HTTPError as e:
+            raise APIError(e)
 
     def get(self, route: str, filters: Optional[Dict] = None) -> Dict:
         url = f"https://{self.hostname}{self.api_version}{route}{self._encode_filters(filters)}"
@@ -886,8 +896,8 @@ class MigrationService:
         # First try to find existing workspace
         workspace = self.scalr.get_workspace(env_id, attributes['name'])
 
-        if (workspace is not None) ^ self.args.skip_workspace_creation:
-            workspace_data = TerraformDataSource("scalr_workspace", env_id, {"name": attributes['name']})
+        if workspace is not None:
+            workspace_data = TerraformDataSource("scalr_workspace", env_id, workspace['attributes'])
             workspace_data.id = workspace["id"]
             if tf_workspace.get("id"):
                 self.create_workspace_map(tf_workspace['id'], workspace_data)
@@ -1001,8 +1011,8 @@ class MigrationService:
             if e.code != 404:
                 raise
 
-    def create_state(self, tf_workspace: Dict, workspace_id: str) -> None:
-        current_scalr_state = self.get_current_state(workspace_id)
+    def create_state(self, tf_workspace: Dict, workspace: AbstractTerraformResource) -> None:
+        current_scalr_state = self.get_current_state(workspace.id)
         current_tf_state = tf_workspace["relationships"]["current-state-version"]
 
         if not current_tf_state or not current_tf_state.get("links"):
@@ -1024,6 +1034,12 @@ class MigrationService:
 
         raw_state["terraform_version"] = _enforce_max_version(raw_state["terraform_version"],'State file')
 
+        if version.parse(raw_state["terraform_version"]) > version.parse(workspace.attributes['terraform-version']):
+            ConsoleOutput.warning('Terraform version of the current state is bigger then workspace version, upgrading workspace')
+            self.scalr.update_workspace(workspace.id, {
+                "data": {"attributes": {"terraform_version": raw_state["terraform_version"]}, "type": "workspaces"}
+            })
+
         state_content = json.dumps(raw_state).encode('utf-8')
         encoded_state = binascii.b2a_base64(state_content)
 
@@ -1034,7 +1050,7 @@ class MigrationService:
             "state": encoded_state.decode("utf-8")
         }
 
-        self.scalr.create_state_version(workspace_id, state_attrs)
+        self.scalr.create_state_version(workspace.id, state_attrs)
 
     def create_backend_config(self) -> None:
         """Create backend configuration for the management workspace."""
@@ -1063,7 +1079,7 @@ class MigrationService:
         workspace = self.create_workspace(env['id'], tf_workspace)
 
         ConsoleOutput.info(f"Migrating state...")
-        self.create_state(tf_workspace, workspace.id)
+        self.create_state(tf_workspace, workspace)
 
         # Skip variable migration if requested
         if self.args.skip_variables == "*":
@@ -1194,7 +1210,7 @@ class MigrationService:
 
     def should_migrate_workspace(self, workspace_name: str) -> bool:
         for pattern in self.args.workspaces.split(','):
-            if fnmatch.fnmatch(workspace_name, pattern):
+            if re.search(pattern.replace("'", ''), workspace_name, re.IGNORECASE):
                 return True
         return False
 
