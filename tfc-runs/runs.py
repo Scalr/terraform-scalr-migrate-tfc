@@ -5,7 +5,9 @@ import os
 import requests
 import sys
 import time
+
 from urllib.parse import urlencode
+from datetime import datetime, timedelta, timezone
 
 
 @click.group()
@@ -23,7 +25,19 @@ def cli():
     multiple=False,
     help="TFC/E hostname",
 )
-def list_all(hostname):
+@click.option(
+    "--period",
+    default=None,
+    type=int,
+    multiple=False,
+    help="Period to check in days.",
+)
+def list_all(hostname: str, period: int = None):
+    if period:
+        print(f"Checking runs within the last {period} days\n")
+    else:
+        print(f"Checking runs within the last year\n")
+
     continue_message = f"Run the `terraform login {hostname}` command to continue"
     home_dir = os.getenv("HOME")
     try:
@@ -39,16 +53,14 @@ def list_all(hostname):
         print(f"Cannot find credentials for the Terraform Cloud/Enterprise. {continue_message}")
         sys.exit(1)
 
-    tf_token = credentials_json["credentials"][hostname]["token"]
-
     def encode_filters(filters):
         return f"?{urlencode(filters)}" if filters else ""
 
     def fetch_tfc(route, filters=None, retry_attempt=0):
-        response = requests.get(
-            f"https://{hostname}/api/v2/{route}{encode_filters(filters)}",
-            headers={"Authorization": f"Bearer {tf_token}"}
-        )
+        url = f"https://{hostname}/api/v2/{route}{encode_filters(filters)}"
+        response = requests.get(url, headers={
+            "Authorization": f"Bearer {credentials_json["credentials"][hostname]["token"]}"
+        })
 
         status_code = response.status_code
         if status_code not in [200]:
@@ -71,29 +83,42 @@ def list_all(hostname):
         return response.json()
 
     def fetch_organizations(page_number=1):
-        return fetch_tfc("organizations",  [('page[size]', '100'), ('page[number]', page_number)])
-
-    def fetch_workspaces(org_name, page_number=1):
-        return fetch_tfc(f"organizations/{org_name}/workspaces", [('page[size]', '100'), ('page[number]', page_number)])
+        return fetch_tfc("organizations", [('page[size]', '100'), ('page[number]', page_number)])
 
     total_runs = 0
     organizations_token = 1
+
+    filter_runs = [('filter[status_group]', 'final'), ('page[size]', 100)]
+    report = "Organization %s has had %d runs"
+    check_period = None
+
+    if period:
+        check_period = datetime.now() - timedelta(days=period)
+        check_period = check_period.replace(tzinfo=timezone.utc)
 
     while organizations_token:
         organizations = fetch_organizations(organizations_token)
         organizations_token = organizations["meta"]["pagination"]["next-page"]
 
         for organization in organizations["data"]:
+            org_total = 0
             name = organization["attributes"]["name"]
-            workspaces_token = 1
-            while workspaces_token:
-                workspaces = fetch_workspaces(name, workspaces_token)
-                workspaces_token = workspaces["meta"]["pagination"]["next-page"]
-                for workspace in workspaces["data"]:
-                    ws_name = workspace["attributes"]["name"]
-                    ws_total = fetch_tfc(f"workspaces/{workspace['id']}/runs")["meta"]["status-counts"]["total"]
-                    print(f"Workspace {name}/{ws_name} has had {ws_total} runs.")
-                    total_runs += ws_total
+            runs_token = 1
+            while runs_token:
+                runs = fetch_tfc(f"organizations/{name}/runs", filter_runs + [('page[number]', runs_token)])
+                runs_token = runs["meta"]["pagination"]["next-page"]
+                for run in runs["data"]:
+                    created_at_str = run["attributes"]["created-at"]
+                    created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+
+                    if check_period is None or created_at >= check_period:
+                        org_total += 1
+                    else:
+                        break
+
+            print(report % (name, org_total))
+            total_runs += org_total
+
     print("---------------------------")
     print(f"The total runs count across all organizations: {total_runs}")
     sys.exit(0)
