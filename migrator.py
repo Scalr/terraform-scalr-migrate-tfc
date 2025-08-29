@@ -37,7 +37,8 @@ class MissingMappingError(Exception):
 
 class APIError(Exception):
     def __init__(self, error: urllib.error.HTTPError) -> None:
-        self.api_error = json.loads(error.read().decode('utf-8'))["errors"][0]["detail"]
+        errors: dict = json.loads(error.read().decode('utf-8'))["errors"][0]
+        self.api_error = errors.get("detail", errors.get("title"))
         self.code = error.code
 
     def __str__(self) -> str:
@@ -1008,9 +1009,9 @@ class MigrationService:
     def get_current_state(self, workspace_id: str) -> Optional[Dict]:
         try:
             return self.scalr.get(f"workspaces/{workspace_id}/current-state-version")
-        except urllib.error.HTTPError as e:
+        except APIError as e:
             if e.code != 404:
-                raise APIError(e)
+                raise e
 
     def create_state(self, tf_workspace: Dict, workspace: AbstractTerraformResource) -> None:
         current_scalr_state = self.get_current_state(workspace.id)
@@ -1035,11 +1036,12 @@ class MigrationService:
 
         raw_state["terraform_version"] = _enforce_max_version(raw_state["terraform_version"],'State file')
 
-        if version.parse(raw_state["terraform_version"]) > version.parse(workspace.attributes['terraform-version']):
-            ConsoleOutput.warning('Terraform version of the current state is bigger then workspace version, upgrading workspace')
-            self.scalr.update_workspace(workspace.id, {
-                "data": {"attributes": {"terraform_version": raw_state["terraform_version"]}, "type": "workspaces"}
-            })
+        if workspace.attributes.get('terraform-version'):
+            if version.parse(raw_state["terraform_version"]) > version.parse(workspace.attributes.get('terraform-version')):
+                ConsoleOutput.warning('Terraform version of the current state is bigger then workspace version, upgrading workspace')
+                self.scalr.update_workspace(workspace.id, {
+                    "data": {"attributes": {"terraform_version": raw_state["terraform_version"]}, "type": "workspaces"}
+                })
 
         state_content = json.dumps(raw_state).encode('utf-8')
         encoded_state = binascii.b2a_base64(state_content)
