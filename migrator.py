@@ -933,7 +933,7 @@ class MigrationService:
             branch = vcs_repo["branch"] if vcs_repo.get("branch") in vcs_repo else None
 
             workspace_attrs["vcs-repo"] = {
-                "identifier": vcs_repo["identifier"],
+                "identifier": attributes["vcs-repo-identifier"],
                 "dry-runs-enabled": attributes.get("speculative-enabled", True),
                 "trigger-prefixes": attributes.get("trigger-prefixes", vcs_repo.get("trigger-prefixes", [])),
                 "branch": branch,
@@ -973,7 +973,7 @@ class MigrationService:
 
         if vcs_repo:
             resource_attributes["vcs_repo"] = {
-                "identifier": vcs_repo["identifier"],
+                "identifier": attributes["vcs-repo-identifier"],
                 "dry_runs_enabled": attributes["speculative-enabled"],
                 "branch": branch,
                 "ingress_submodules": vcs_repo["ingress-submodules"],
