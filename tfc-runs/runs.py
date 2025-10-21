@@ -58,9 +58,12 @@ def list_all(hostname: str, period: int = None):
 
     def fetch_tfc(route, filters=None, retry_attempt=0):
         url = f"https://{hostname}/api/v2/{route}{encode_filters(filters)}"
-        response = requests.get(url, headers={
-            "Authorization": f"Bearer {credentials_json["credentials"][hostname]["token"]}"
-        })
+        response = requests.get(
+            url,
+            headers={
+                "Authorization": f"Bearer {credentials_json['credentials'][hostname]['token']}"
+            }
+        )
 
         status_code = response.status_code
         if status_code not in [200]:
