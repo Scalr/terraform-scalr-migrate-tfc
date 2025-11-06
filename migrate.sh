@@ -155,6 +155,7 @@ show_help() {
     echo "  --skip-workspace-creation         Skip creating new workspaces in Scalr"
     echo "  --skip-backend-secrets            Skip creating shell variables in Scalr"
     echo "  --skip-tfc-lock                   Skip locking of the TFC/E workspaces after migration"
+    echo "  --skip-post-migration             Skip post-migration Terraform steps (fmt, init, apply)"
     echo "  --management-env-name NAME        Name of the management environment (default: scalr-admin)"
     echo "  --disable-deletion-protection     Disable deletion protection in workspace resources"
     echo "  --skip-variables PATTERNS         Comma-separated list of variable keys to skip, or '*' to skip all variables"
@@ -209,7 +210,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         # Handle boolean flags
-        --skip-workspace-creation|--skip-backend-secrets|--skip-tfc-lock|--disable-deletion-protection)
+        --skip-workspace-creation|--skip-backend-secrets|--skip-tfc-lock|--skip-post-migration|--disable-deletion-protection)
             param="${1#--}"  # Remove leading --
             env_var=$(echo "$param" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
             export "$env_var"=true
@@ -292,18 +293,22 @@ deactivate
 if [ $? -eq 0 ]; then
     echo "Migration completed successfully!"
     
-    # Run post-migration script if it exists
-    echo "Starting post-migration steps..."
+    # Run post-migration steps if not skipped
+    if [ "$SKIP_POST_MIGRATION" != "true" ]; then
+        echo "Starting post-migration steps..."
 
-    # Example: Navigate to the generated Terraform directory
-    terraform_dir="./generated-terraform/$SCALR_ENVIRONMENT"
-    cd "$terraform_dir" || exit 1
+        # Navigate to the generated Terraform directory
+        terraform_dir="./generated-terraform/$SCALR_ENVIRONMENT"
+        cd "$terraform_dir" || exit 1
 
-    terraform fmt -list=false
-    terraform init
-    terraform apply
+        terraform fmt -list=false
+        terraform init
+        terraform apply
 
-    echo "Post-migration steps completed successfully!"
+        echo "Post-migration steps completed successfully!"
+    else
+        echo "Skipping post-migration steps as requested."
+    fi
 else
     echo "Migration failed. Please check the errors above."
     exit 1

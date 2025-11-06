@@ -1213,8 +1213,32 @@ class MigrationService:
 
     def should_migrate_workspace(self, workspace_name: str) -> bool:
         for pattern in self.args.workspaces.split(','):
-            if re.search(pattern.replace("'", ''), workspace_name, re.IGNORECASE):
-                return True
+            # Clean the pattern by removing quotes and whitespace
+            cleaned_pattern = pattern.replace("'", '').replace('"', '').strip()
+            
+            # Skip empty patterns
+            if not cleaned_pattern:
+                continue
+                
+            try:
+                # Use fnmatch-style pattern matching for simpler, safer pattern matching
+                # Convert shell-style wildcards to regex
+                if '*' in cleaned_pattern or '?' in cleaned_pattern:
+                    # Convert shell wildcards to regex
+                    regex_pattern = cleaned_pattern.replace('*', '.*').replace('?', '.')
+                    # Escape other regex special characters except . and *
+                    regex_pattern = re.escape(regex_pattern).replace(r'\.\*', '.*').replace(r'\.', '.')
+                else:
+                    # For patterns without wildcards, use exact match (case insensitive)
+                    regex_pattern = re.escape(cleaned_pattern)
+                
+                if re.search(regex_pattern, workspace_name, re.IGNORECASE):
+                    return True
+            except re.error as e:
+                # If regex fails, fall back to simple string matching
+                print(f"Warning: Invalid pattern '{cleaned_pattern}': {e}. Using simple string matching.")
+                if cleaned_pattern.lower() in workspace_name.lower():
+                    return True
         return False
 
     def init_backend_secrets(self):

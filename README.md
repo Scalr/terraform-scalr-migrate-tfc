@@ -25,11 +25,29 @@ At the end of the migration, the Scalr Terraform provider code will be generated
 
 ## Prerequisites
 
-- Python 3.12 or higher
+- Python 3.x (automatically detects python3.12, python3, or python)
 - Terraform Cloud/Enterprise credentials
 - Scalr credentials
 - [VCS provider configured in Scalr](https://docs.scalr.io/docs/vcs-providers) (if migrating workspaces with VCS)
 - [Provider configuration in Scalr](https://docs.scalr.io/docs/provider-configurations) (if linking workspaces to provider configurations)
+
+## Cross-Platform Compatibility
+
+This migration tool is designed to work seamlessly across different operating systems and environments:
+
+### Supported Platforms
+- **Linux/macOS**: Native bash environments
+- **Windows**: Git Bash, WSL (Windows Subsystem for Linux), Cygwin, MSYS2
+
+### Automatic Detection
+- **Python**: Automatically detects and uses the best available Python 3.x installation
+- **Operating System**: Automatically adapts paths and commands based on the detected platform
+- **Virtual Environment**: Handles activation scripts for both Windows and Unix-like systems
+- **Home Directory**: Cross-platform detection for credential file locations
+
+### Dependencies
+- **jq**: Optional for reading Terraform credentials file (graceful fallback if not available)
+- **bash**: Required shell environment (available on all supported platforms)
 
 ## Installation
 
@@ -110,10 +128,12 @@ terraform login account.scalr.io
 - `-v|--vcs-name`: VCS provider name in Scalr (required if not using `--skip-workspace-creation` for VCS driven-workspaces)
 - `--pc-name`: Provider configuration name in Scalr to link to workspaces
 - `--agent-pool-name`: Agent pool name in Scalr to link to workspaces
-- `-w|--workspaces`: Workspace name pattern (supports glob patterns, default: "*")
+- `-w|--workspaces`: Workspace name pattern (supports shell-style wildcards, default: "*")
+  - Examples: `"prod-*"` (starts with prod-), `"*-staging"` (ends with -staging), `"test?"` (test + any single char)
 - `--skip-workspace-creation`: Skip workspace creation in Scalr (use if workspaces already exist)
 - `--skip-backend-secrets`: Skip creation of shell variables for backend configuration
 - `--skip-tfc-lock`: Skip locking TFC/E workspaces after migration
+- `--skip-post-migration`: Skip post-migration Terraform steps (fmt, init, apply)
 - `--management-env-name`: Name of the management environment (default: "scalr-admin")
 - `--disable-deletion-protection`: Disable deletion protection in workspace resources
 - `--tfc-project`: TFC project name to filter workspaces by
@@ -129,7 +149,13 @@ The tool generates the following files in the `generated-terraform/$SCALR_ENVIRO
 
 ### Post-Migration
 
-After successful migration, the tool will execute terraform apply and import all previously created resources in the management workspace state file.
+After successful migration, the tool will automatically execute the following steps (unless `--skip-post-migration` is specified):
+1. Navigate to the generated Terraform directory
+2. Run `terraform fmt` to format the generated code
+3. Run `terraform init` to initialize the workspace
+4. Run `terraform apply` to import all previously created resources in the management workspace state file
+
+To skip these automatic steps and run them manually, use the `--skip-post-migration` flag.
 
 ## Limitations
 

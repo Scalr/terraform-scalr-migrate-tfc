@@ -1,5 +1,33 @@
 [Unreleased]
 
+[0.3.4] - 2025-11-06
+
+### Added
+- Cross-platform compatibility for Windows and Linux/macOS systems
+- Support for Git Bash, WSL, Cygwin, MSYS2 on Windows and native bash on Unix-like systems
+- `--skip-post-migration` option to skip automatic Terraform steps (fmt, init, apply)
+- Automatic Python 3.x detection (tries python3.12, python3, python in order)
+- Cross-platform virtual environment activation handling
+- Graceful handling when `jq` is not available for credential parsing
+
+### Changed
+- Enhanced workspace pattern matching with better wildcard support and error handling
+- Improved home directory detection for cross-platform credential file access
+- More robust command existence checking across different platforms
+- Better error messages and fallback behavior for invalid regex patterns
+
+### Fixed
+- Regex error "nothing to repeat at position 0" in workspace pattern matching
+- Cross-platform path handling for generated Terraform directories
+- Virtual environment activation paths for Windows vs Unix systems
+- Pattern matching now properly handles shell wildcards (`*`, `?`) and escapes special regex characters
+
+### Technical Improvements
+- Added platform detection for Windows (Cygwin, MinGW, MSYS) vs Unix-like systems
+- Enhanced pattern cleaning and validation in workspace filtering
+- Improved error handling with try-catch blocks and fallback mechanisms
+- All shellcheck linting warnings resolved
+
 [0.3.3] - 2025-04-17
 
 ### Added
