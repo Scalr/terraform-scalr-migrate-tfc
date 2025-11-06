@@ -1,6 +1,10 @@
-[Unreleased]
+# Changelog
 
-[0.3.5] - 2025-11-06
+All notable changes to this project will be documented in this file.
+
+## [Unreleased]
+
+## [0.3.5] - 2025-11-06
 
 ### Added
 
@@ -34,44 +38,44 @@
 - Improved error handling with try-catch blocks and fallback mechanisms
 - All shellcheck linting warnings resolved
 
-[0.3.4] - 2025-04-17
+## [0.3.4] - 2025-04-17
 
-### Fixed
+### Bug Fixes
 
 - Processing of shell parameters and handling of missing provider configuration
 
-[0.3.3] - 2025-04-17
+## [0.3.3] - 2025-04-17
 
-### Added
+### Enhancements
 
 - Support for agent pool linking via `--agent-pool-name` argument
 - Automatic updated of the provider configuration environment access of newly created environments
 
-[0.3.2] - 2025-04-16
+## [0.3.2] - 2025-04-16
 
-### Added
+### New Features
 
 - Support for provider configuration linking via `--pc-name` argument
 - Improved variable handling with pattern-based skipping
 
-### Changed
+### Improvements
 
 - Updated workspace creation to support provider configuration linking
 
-### Fixed
+### Fixes
 
 - Setting workspaces working directories
 
-[0.3.1] - 2025-04-14
+## [0.3.1] - 2025-04-14
 
 ### Changes
 
 - Added proper handling of multiline trigger patterns using heredoc (EOT) format
 - Enhanced workspace configuration handling with improved trigger pattern validation
 
-[0.3.0] - 2025-04-11
+## [0.3.0] - 2025-04-11
 
-### New Features
+### Features
 
 - Terraform code generation of migrated environment, workspaces, and variables.
 - Added support for TFC projects to filter workspaces during migration
@@ -79,7 +83,7 @@
 - Enhanced credential management with support for `~/.terraform.d/credentials.tfrc.json`
 - Improved console output with color-coded messages and clear section headers
 
-### Changes
+### Breaking Changes
 
 - Renamed TFC-related arguments for consistency:
   - `--tf-hostname` → `--tfc-hostname`
@@ -120,7 +124,7 @@
   --vcs-name your-vcs
 ```
 
-### Bug Fixes
+### Stability Improvements
 
 - Fixed dependency installation to only occur on first run
 - Fixed credential file reading to properly handle missing values
@@ -134,3 +138,10 @@
 ### Migration Path
 
 - No migration required from previous versions as this is the first release
+
+[0.3.5]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.3.5
+[0.3.4]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.3.4
+[0.3.3]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.3.3
+[0.3.2]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.3.2
+[0.3.1]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.3.1
+[0.3.0]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.3.0
