@@ -509,6 +509,15 @@ class TFCClient(APIClient):
             ConsoleOutput.info("Skipping: plan file is unavailable")
             return {}
 
+    def get_agent_pool(self, agent_pool_id: str) -> Optional[Dict]:
+        """Get TFC agent pool details by ID."""
+        try:
+            return self.get(f"agent-pools/{agent_pool_id}")
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                raise APIError(e)
+            return None
+
     def lock_workspace(self, workspace_id: str, reason: str) -> Dict:
         return self.post(f"workspaces/{workspace_id}/actions/lock", {"reason": reason})
 
@@ -761,6 +770,10 @@ class MigrationService:
         self.workspaces_map = {}
         self.agent_pool_id: Optional[str] = None
         self.agent_pool_data: Optional[TerraformDataSource] = None
+        # Cache for agent pool lookups to avoid duplicate API calls
+        self.tfc_agent_pool_cache: Dict[str, Optional[str]] = {}  # workspace_id -> agent_pool_name
+        self.scalr_agent_pool_cache: Dict[str, Optional[str]] = {}  # agent_pool_name -> agent_pool_id
+        self.agent_pool_data_sources: Dict[str, TerraformDataSource] = {}  # agent_pool_name -> data_source
 
         self.load_account_id()
 
@@ -887,6 +900,88 @@ class MigrationService:
 
         return self.agent_pool_id
 
+    def find_scalr_agent_pool_by_name(self, agent_pool_name: str) -> Optional[str]:
+        """Find Scalr agent pool ID by name with caching."""
+        # Check cache first
+        if agent_pool_name in self.scalr_agent_pool_cache:
+            return self.scalr_agent_pool_cache[agent_pool_name]
+        
+        try:
+            agent_pools = self.scalr.get('agent-pools', {"filter[name]": agent_pool_name})['data']
+            if agent_pools:
+                agent_pool_id = agent_pools[0]["id"]
+                # Check if the agent pool has active agents
+                agents = self.scalr.get('agents', {"filter[agent-pool]": agent_pool_id})['data']
+                if agents:
+                    ConsoleOutput.info(f"Found matching Scalr agent pool: '{agent_pool_name}'")
+                    self.scalr_agent_pool_cache[agent_pool_name] = agent_pool_id
+                    return agent_pool_id
+                else:
+                    ConsoleOutput.warning(f"Scalr agent pool '{agent_pool_name}' found but has no active agents")
+                    self.scalr_agent_pool_cache[agent_pool_name] = None
+            else:
+                ConsoleOutput.warning(f"No Scalr agent pool found with name: '{agent_pool_name}'")
+                self.scalr_agent_pool_cache[agent_pool_name] = None
+        except Exception as e:
+            ConsoleOutput.warning(f"Error searching for agent pool '{agent_pool_name}': {e}")
+            self.scalr_agent_pool_cache[agent_pool_name] = None
+        
+        return None
+
+    def get_tfc_agent_pool_name(self, tf_workspace: Dict) -> Optional[str]:
+        """Extract TFC agent pool name from workspace relationships with caching."""
+        workspace_id = tf_workspace.get('id')
+        
+        # Check cache first
+        if workspace_id in self.tfc_agent_pool_cache:
+            return self.tfc_agent_pool_cache[workspace_id]
+        
+        relationships = tf_workspace.get('relationships', {})
+        agent_pool_rel = relationships.get('agent-pool')
+        
+        if not agent_pool_rel:
+            self.tfc_agent_pool_cache[workspace_id] = None
+            return None
+            
+        # Get the agent pool ID from the relationship
+        agent_pool_data = agent_pool_rel.get('data')
+        if not agent_pool_data:
+            self.tfc_agent_pool_cache[workspace_id] = None
+            return None
+            
+        agent_pool_id = agent_pool_data.get('id')
+        if not agent_pool_id:
+            self.tfc_agent_pool_cache[workspace_id] = None
+            return None
+            
+        # Fetch the agent pool details to get the name
+        try:
+            agent_pool_info = self.tfc.get_agent_pool(agent_pool_id)
+            if agent_pool_info and agent_pool_info.get('data'):
+                agent_pool_name = agent_pool_info['data']['attributes']['name']
+                ConsoleOutput.info(f"TFC workspace has agent pool: '{agent_pool_name}'")
+                self.tfc_agent_pool_cache[workspace_id] = agent_pool_name
+                return agent_pool_name
+        except Exception as e:
+            ConsoleOutput.warning(f"Error fetching TFC agent pool details: {e}")
+            
+        self.tfc_agent_pool_cache[workspace_id] = None
+        return None
+
+    def get_or_create_agent_pool_data_source(self, agent_pool_name: str) -> TerraformDataSource:
+        """Get or create a cached agent pool data source."""
+        if agent_pool_name not in self.agent_pool_data_sources:
+            data_source_name = agent_pool_name.replace("-", "_").replace(" ", "_")
+            agent_pool_data = TerraformDataSource(
+                "scalr_agent_pool",
+                data_source_name,
+                {"name": agent_pool_name}
+            )
+            self.resource_manager.add_data_source(agent_pool_data)
+            self.agent_pool_data_sources[agent_pool_name] = agent_pool_data
+        
+        return self.agent_pool_data_sources[agent_pool_name]
+
     def create_workspace(
         self,
         env_id: str,
@@ -948,7 +1043,25 @@ class MigrationService:
                 workspace_attrs["vcs-repo"]["trigger-patterns"] = trigger_patterns
 
         relationships = tf_workspace.get('relationships', {})
-        agent_pool_id = self.get_agent_pool_id() if relationships.get("agent-pool") else None
+        
+        # Determine agent pool ID and name to use
+        agent_pool_id = None
+        agent_pool_name_for_terraform = None
+        
+        if relationships.get("agent-pool"):
+            # First, try to find matching Scalr agent pool by TFC agent pool name
+            tfc_agent_pool_name = self.get_tfc_agent_pool_name(tf_workspace)
+            if tfc_agent_pool_name:
+                agent_pool_id = self.find_scalr_agent_pool_by_name(tfc_agent_pool_name)
+                if agent_pool_id:
+                    agent_pool_name_for_terraform = tfc_agent_pool_name
+            
+            # If no matching agent pool found and global agent pool is configured, use it as fallback
+            if not agent_pool_id and self.args.agent_pool_name:
+                ConsoleOutput.info(f"No matching agent pool found, using configured agent pool: '{self.args.agent_pool_name}'")
+                agent_pool_id = self.get_agent_pool_id()
+                agent_pool_name_for_terraform = self.args.agent_pool_name
+        
         response = self.scalr.create_workspace(env_id, workspace_attrs, vcs_id, agent_pool_id)
 
         ConsoleOutput.success(f"Created workspace '{attributes['name']}'")
@@ -988,8 +1101,9 @@ class MigrationService:
         if pc_id:
             resource_attributes["provider_configuration"] = HCLObject({"id": self.get_pc_data()})
 
-        if agent_pool_id:
-            resource_attributes["agent_pool_id"] = self.get_agent_pool_data()
+        if agent_pool_id and agent_pool_name_for_terraform:
+            # Create or get cached data source for the agent pool
+            resource_attributes["agent_pool_id"] = self.get_or_create_agent_pool_data_source(agent_pool_name_for_terraform)
 
         workspace_resource = TerraformResource(
             "scalr_workspace",
