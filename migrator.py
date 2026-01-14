@@ -1845,6 +1845,7 @@ def main():
         migration_service.migrate()
     except APIError as e:
         ConsoleOutput.error("Unable to migrate workspaces from TFC/E to Scalr: {}".format(e))
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
