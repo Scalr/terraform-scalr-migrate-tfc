@@ -1483,7 +1483,17 @@ class MigrationService:
             bufsize=1,
             universal_newlines=True
         )
-        job.wait()
+
+        return_code = job.wait()
+
+        if return_code == 0:
+            print("Init succeeded")
+        else:
+            print("Init failed")
+            stdout, stderr = job.communicate()
+            print("STDOUT:\n", stdout)
+            if stderr:
+                print("STDERR:\n", stderr)
 
     @staticmethod
     def trigger_background_job(working_directory: str, args: List[str]):
@@ -1492,7 +1502,7 @@ class MigrationService:
         Process survives main process exit.
         """
         operation = f"{args[0]} {args[1]}"  # e.g. "terraform_plan"
-        ConsoleOutput.info(f"Starting background job `{operation}`...")
+        ConsoleOutput.info(f"Starting a background job `{operation}` in TFC to finish sensitive environment variables migration...")
         log_file = os.path.join(working_directory, f"{operation}.log")
 
         # Open log file directly for the child; no shell redirection needed.
@@ -1511,7 +1521,7 @@ class MigrationService:
         # Close in parent, child keeps the fd.
         log_fd.close()
 
-        ConsoleOutput.info(f"{operation} detached → {log_file} (pid={proc.pid})")
+        ConsoleOutput.info(f"{operation} detached → {log_file} to track plan progress (pid={proc.pid})")
         return log_file
 
     def migrate_sensitive_environment_variables(self, skipped_shell_vars: List[str], tf_workspace, workspace):
