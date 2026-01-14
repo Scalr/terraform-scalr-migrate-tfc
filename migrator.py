@@ -1840,8 +1840,11 @@ def main():
 
     # Convert argparse namespace to MigratorArgs and run migration
     migrator_args = MigratorArgs.from_argparse(args)
-    migration_service = MigrationService(migrator_args)
-    migration_service.migrate()
+    try:
+        migration_service = MigrationService(migrator_args)
+        migration_service.migrate()
+    except APIError as e:
+        ConsoleOutput.error("Unable to migrate workspaces from TFC/E to Scalr: {}".format(e))
 
 if __name__ == "__main__":
     main()
