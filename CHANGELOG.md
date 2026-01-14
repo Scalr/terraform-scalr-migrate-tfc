@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-01-14
+
+### Added
+
+- Added support for migration of sensitive environment variables.
+
+### Changed
+- Improved reading of sensitive Terraform variables if the current workspace run did not produce any plan file.
+
 ## [0.3.5] - 2025-11-06
 
 ### Added

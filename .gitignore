@@ -34,3 +34,4 @@ override.tf.json
 *.vscode/
 venv
 generated-terraform/
+terraform-cloud/

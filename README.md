@@ -162,7 +162,7 @@ To skip these automatic steps and run them manually, use the `--skip-post-migrat
 - Supports up to Terrraform 1.5.7. If a higher version is used, the script will downgrade it to 1.5.7.
 - State migration requires at least one state file in the source TFC/E workspace.
 - Sensitive terraform variables migration requires at least one plan file in the source TFC/E workspace.
-- Sensitive environment variables are not migrated
+- Sensitive environment variables requires triggering of the remote run in a TFC/E workspace
 
 ## Troubleshooting
 
