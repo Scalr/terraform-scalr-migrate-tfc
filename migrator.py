@@ -112,6 +112,7 @@ class MigratorArgs:
     disable_deletion_protection: bool = False
     debug_enabled: bool = os.getenv("SCALR_DEBUG_ENABLED", False)
     skip_variables: Optional[str] = None
+    use_opentofu: bool = False
 
     @classmethod
     def from_argparse(cls, args: argparse.Namespace) -> 'MigratorArgs':
@@ -136,7 +137,8 @@ class MigratorArgs:
             management_env_name=args.management_env_name,
             management_workspace_name=f"{args.scalr_environment}",
             disable_deletion_protection=args.disable_deletion_protection,
-            skip_variables=args.skip_variables
+            skip_variables=args.skip_variables,
+            use_opentofu=args.use_opentofu
         )
 
 class HClAttribute:
@@ -804,13 +806,6 @@ class ScalrClient(APIClient):
             if e.code != 404:
                 raise e
 
-def _enforce_max_version(tf_version: str, workspace_name) -> str:
-    if  tf_version == "latest" or version.parse(tf_version) > version.parse(MAX_TERRAFORM_VERSION):
-        ConsoleOutput.warning(f"Warning: {workspace_name} uses Terraform {tf_version}. "
-              f"Downgrading to {MAX_TERRAFORM_VERSION}")
-        tf_version = MAX_TERRAFORM_VERSION
-    return tf_version
-
 class ConsoleOutput:
     HEADER = '\033[95m'
     BLUE = '\033[94m'
@@ -911,6 +906,7 @@ class MigrationService:
         self.workspaces_map = {}
         self.agent_pool_id: Optional[str] = None
         self.agent_pool_data: Optional[TerraformDataSource] = None
+        self.tofu_version: Optional[Dict] = None
         # Cache for agent pool lookups to avoid duplicate API calls
         self.tfc_agent_pool_cache: Dict[str, Optional[str]] = {}  # workspace_id -> agent_pool_name
         self.scalr_agent_pool_cache: Dict[str, Optional[str]] = {}  # agent_pool_name -> agent_pool_id
@@ -935,6 +931,18 @@ class MigrationService:
             ConsoleOutput.error("The token is associated with more than 1 account.")
             sys.exit(1)
         self.args.account_id = accounts[0]["id"]
+
+    def load_tofu(self):
+        if self.args.use_opentofu and not self.tofu_version:
+            latest_version = self.scalr.get('software-versions', {
+                "filter[software-type]": "opentofu",
+                "filter[deprecated]": False,
+                "filter[status]": "active",
+                "page[size]": 1,
+                "page[number]": 1
+            })["data"][0]
+            ConsoleOutput.info(f"Migration to Opentofu is enabled, workspaces above 1.5.7 will be migrated to {latest_version['attributes']['version']}")
+            self.tofu_version = latest_version
 
     def get_vcs_data(self) -> Optional[TerraformDataSource]:
         if self.args.vcs_name and not self.vcs_data:
@@ -1123,6 +1131,19 @@ class MigrationService:
         
         return self.agent_pool_data_sources[agent_pool_name]
 
+    def enforce_max_version(self, tf_version: str, resource_type: str) -> str:
+        if tf_version == "latest" or version.parse(tf_version) > version.parse(MAX_TERRAFORM_VERSION):
+            if not self.args.use_opentofu:
+                ConsoleOutput.warning(f"Workspace uses Terraform {tf_version}. Downgrading to {MAX_TERRAFORM_VERSION}")
+                tf_version = MAX_TERRAFORM_VERSION
+            elif tf_version != "latest" or resource_type != "Workspace":
+                tofu_version = self.tofu_version["attributes"]["version"]
+                ConsoleOutput.info(
+                    f"{resource_type} uses Terraform {tf_version}. Using OpenTofu {tofu_version} instead of downgrading."
+                )
+
+        return tf_version
+
     def create_workspace(
         self,
         env_id: str,
@@ -1143,9 +1164,15 @@ class MigrationService:
 
         ConsoleOutput.info(f"Creating workspace '{attributes['name']}'...")
 
-        terraform_version = _enforce_max_version(attributes.get("terraform-version", "1.6.0"), attributes["name"])
+        terraform_version = self.enforce_max_version(attributes.get("terraform-version", "1.6.0"), 'Workspace')
         execution_mode = "remote" if attributes.get("operations") else "local"
         global_remote_state = attributes.get("global-remote-state", False)
+
+        platform = "opentofu" if (
+            self.args.use_opentofu and
+            (terraform_version == "latest" or version.parse(terraform_version) > version.parse(MAX_TERRAFORM_VERSION))
+        ) else "terraform"
+
 
         workspace_attrs = {
             "name": attributes["name"],
@@ -1155,6 +1182,7 @@ class MigrationService:
             "working-directory": attributes.get("working-directory"),
             "deletion-protection-enabled": not self.args.disable_deletion_protection,
             "remote-state-sharing": global_remote_state,
+            "iac-platform": platform,
         }
 
         vcs_id = None
@@ -1219,7 +1247,8 @@ class MigrationService:
             "terraform_version": terraform_version,
             "working_directory": attributes.get("working-directory"),
             "environment_id": self.get_environment_resource_id(),
-            "deletion_protection_enabled": not self.args.disable_deletion_protection
+            "deletion_protection_enabled": not self.args.disable_deletion_protection,
+            "iac_platform": platform,
         }
 
         if global_remote_state:
@@ -1280,7 +1309,7 @@ class MigrationService:
             ConsoleOutput.info(f"State with serial '{serial}' is up-to-date")
             return
 
-        raw_state["terraform_version"] = _enforce_max_version(raw_state["terraform_version"],'State file')
+        raw_state["terraform_version"] = self.enforce_max_version(raw_state["terraform_version"], 'State file')
 
         if workspace.attributes.get('terraform-version'):
             if version.parse(raw_state["terraform_version"]) > version.parse(workspace.attributes.get('terraform-version')):
@@ -1686,6 +1715,7 @@ class MigrationService:
     def migrate(self):
         ConsoleOutput.section("Preparing migration")
         self.init_backend_secrets()
+        self.load_tofu()
 
         # Get organization and create environment
         tf_organization = self.args.tfc_organization
@@ -1835,6 +1865,7 @@ def main():
     parser.add_argument('--disable-deletion-protection', action='store_true', help='Disable deletion protection in workspace resources. Default: enabled')
     parser.add_argument('--tfc-project', type=str, help='TFC project name to filter workspaces by')
     parser.add_argument('--skip-variables', type=str, help='Comma-separated list of variable keys to skip, or "*" to skip all variables')
+    parser.add_argument('--use-opentofu', action='store_true', help='Use OpenTofu for workspaces with Terraform version > 1.5.7 instead of downgrading')
 
     args = parser.parse_args()
     

@@ -160,6 +160,7 @@ show_help() {
     echo "  --disable-deletion-protection     Disable deletion protection in workspace resources"
     echo "  --skip-variables PATTERNS         Comma-separated list of variable keys to skip, or '*' to skip all variables"
     echo "  --agent-pool-name NAME            Scalr agent pool name"
+    echo "  --use-opentofu                    Use OpenTofu for workspaces with Terraform version > 1.5.7 instead of downgrading"
     echo "  --help                            Show this help message"
     echo ""
     echo "Example:"
@@ -210,7 +211,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         # Handle boolean flags
-        --skip-workspace-creation|--skip-backend-secrets|--skip-tfc-lock|--skip-post-migration|--disable-deletion-protection)
+        --skip-workspace-creation|--skip-backend-secrets|--skip-tfc-lock|--skip-post-migration|--disable-deletion-protection|--use-opentofu)
             param="${1#--}"  # Remove leading --
             env_var=$(echo "$param" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
             export "$env_var"=true
@@ -281,6 +282,7 @@ CMD="$CMD --tfc-organization \"$TFC_ORGANIZATION\""
 [ -n "$TFC_PROJECT" ] && CMD="$CMD --tfc-project \"$TFC_PROJECT\""
 [ -n "$SKIP_VARIABLES" ] && CMD="$CMD --skip-variables \"$SKIP_VARIABLES\""
 [ -n "$SCALR_AGENT_POOL_NAME" ] && CMD="$CMD --agent-pool-name \"$SCALR_AGENT_POOL_NAME\""
+[ "$USE_OPENTOFU" = true ] && CMD="$CMD --use-opentofu"
 
 # Run the migrator
 echo "Running migrator..."

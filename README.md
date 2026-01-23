@@ -138,6 +138,7 @@ terraform login account.scalr.io
 - `--disable-deletion-protection`: Disable deletion protection in workspace resources
 - `--tfc-project`: TFC project name to filter workspaces by
 - `--skip-variables`: Comma-separated list of variable patterns to skip, or "*" to skip all variables
+- `--use-opentofu`: Use OpenTofu for workspaces with Terraform version > 1.5.7 instead of downgrading to 1.5.7
 
 ## Generated Files
 
@@ -159,7 +160,8 @@ To skip these automatic steps and run them manually, use the `--skip-post-migrat
 
 ## Limitations
 
-- Supports up to Terrraform 1.5.7. If a higher version is used, the script will downgrade it to 1.5.7.
+- By default, supports up to Terraform 1.5.7. If a higher version is used, the script will downgrade it to 1.5.7.
+- When `--use-opentofu` is enabled, workspaces with Terraform version > 1.5.7 will use OpenTofu instead of downgrading. This requires Scalr to support OpenTofu.
 - State migration requires at least one state file in the source TFC/E workspace.
 - Sensitive terraform variables migration requires at least one plan file in the source TFC/E workspace.
 - Sensitive environment variables requires triggering of the remote run in a TFC/E workspace
