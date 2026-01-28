@@ -1132,6 +1132,17 @@ class MigrationService:
         return self.agent_pool_data_sources[agent_pool_name]
 
     def enforce_max_version(self, tf_version: str, resource_type: str) -> str:
+        range_versions_map = {
+            "~>1.4.0": "1.4.7",
+            "~>1.5.0": "1.5.7",
+        }
+
+        if tf_version in range_versions_map:
+            return range_versions_map[tf_version]
+
+        if "~>" in tf_version:
+            tf_version = tf_version.strip("~>")
+
         if tf_version == "latest" or version.parse(tf_version) > version.parse(MAX_TERRAFORM_VERSION):
             if not self.args.use_opentofu:
                 ConsoleOutput.warning(f"Workspace uses Terraform {tf_version}. Downgrading to {MAX_TERRAFORM_VERSION}")
@@ -1141,6 +1152,7 @@ class MigrationService:
                 ConsoleOutput.info(
                     f"{resource_type} uses Terraform {tf_version}. Using OpenTofu {tofu_version} instead of downgrading."
                 )
+                tf_version = tofu_version
 
         return tf_version
 
