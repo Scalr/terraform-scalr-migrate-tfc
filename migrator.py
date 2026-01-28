@@ -535,10 +535,17 @@ class TFCClient(APIClient):
         filters = {"page[size]": page_size}
         runs = self.get(f"workspaces/{tf_workspace['id']}/runs", filters)['data']
         plan = None
+        latest_run = None
         if len(runs):
-            plan = self.get_run_plan(runs[0]['id'])
+            latest_run = runs[0]
+            ConsoleOutput.info(f"Found latest run {latest_run['id']} in status `{latest_run['attributes']['status']}`")
+            plan = self.get_run_plan(latest_run['id'])
 
         if not plan:
+            if latest_run:
+                ConsoleOutput.info(
+                    f"No plan found for {latest_run['id']}, trying to get the plan of the current state file"
+                )
             state = self.get_current_state(tf_workspace)
             if state:
                 plan = self.get_run_plan(state['relationships']['run']['data']['id'])
@@ -1483,11 +1490,15 @@ class MigrationService:
 
     def migrate_sensitive_terraform_variables(self, skipped_sensitive_vars, tf_workspace, workspace):
         # Get sensitive variables from plan
-        plan = self.tfc.get_latest_plan(tf_workspace) if skipped_sensitive_vars else None
+        if not skipped_sensitive_vars:
+            return
+        plan = self.tfc.get_latest_plan(tf_workspace)
         if not plan:
+            ConsoleOutput.warning("Unable to find a plan to migrate sensitive variables")
             return
 
         if not "variables" in plan:
+            ConsoleOutput.warning("Unable to find variables in plan file to migrate sensitive variables")
             return
 
         ConsoleOutput.info("Plan file is available, reading its variables...")
