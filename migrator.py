@@ -90,6 +90,9 @@ def make_request(
                 raise APIError(e)
             time.sleep(RATE_LIMIT_DELAY)
 
+def transform_name(name: str) -> str:
+    return name.lower().translate(str.maketrans({' ': '_', '-': '_'}))
+
 @dataclass
 class MigratorArgs:
     scalr_hostname: str
@@ -113,6 +116,7 @@ class MigratorArgs:
     debug_enabled: bool = os.getenv("SCALR_DEBUG_ENABLED", False)
     skip_variables: Optional[str] = None
     use_opentofu: bool = False
+    skip_post_migration: bool = False
 
     @classmethod
     def from_argparse(cls, args: argparse.Namespace) -> 'MigratorArgs':
@@ -135,10 +139,11 @@ class MigratorArgs:
             skip_backend_secrets=args.skip_backend_secrets,
             lock=not args.skip_tfc_lock,
             management_env_name=args.management_env_name,
-            management_workspace_name=f"{args.scalr_environment}",
+            management_workspace_name=args.scalr_environment.replace(" ", '-'),
             disable_deletion_protection=args.disable_deletion_protection,
             skip_variables=args.skip_variables,
-            use_opentofu=args.use_opentofu
+            use_opentofu=args.use_opentofu,
+            skip_post_migration=args.skip_post_migration,
         )
 
 class HClAttribute:
@@ -164,7 +169,7 @@ class HCLObject:
 class AbstractTerraformResource:
     def __init__(self, resource_type: str, name: str, attributes: Dict, hcl_resource_type: str) -> None:
         self.resource_type = resource_type
-        self.name = name.lower().replace('-', '_')
+        self.name = transform_name(name)
         self.attributes = attributes
         self.id = None
         self.hcl_resource_type: str = hcl_resource_type
@@ -342,7 +347,7 @@ class ResourceManager:
         self.data_sources.append(data_source)
 
     def has_resource(self, resource_type: str, name: str) -> bool:
-        converted = name.lower().replace('-', '_')
+        converted = transform_name(name)
 
         for existing in self.resources:
             if existing.resource_type == resource_type and existing.name == converted:
@@ -351,14 +356,14 @@ class ResourceManager:
         return  False
 
     def get_resource(self, resource_type: str, name: str) -> Optional[AbstractTerraformResource]:
-        converted = name.lower().replace('-', '_')
+        converted = transform_name(name)
         for existing in self.data_sources + self.resources:
             if existing.resource_type == resource_type and existing.name == converted:
                 return existing
         return None
 
     def has_data_source(self, resource_type: str, name: str) -> bool:
-        converted = name.lower().replace('-', '_')
+        converted = transform_name(name)
 
         for existing in self.data_sources:
             if existing.resource_type == resource_type and existing.name == converted:
@@ -1020,11 +1025,15 @@ class MigrationService:
         return response
 
     def get_management_workspace_attributes(self):
+        iac_platform = 'opentofu' if self.args.use_opentofu else 'terraform'
+        tf_version = self.tofu_version["attributes"]["version"] if self.args.use_opentofu else MAX_TERRAFORM_VERSION
+
         return {
             "attributes": {
             "name": self.args.management_workspace_name,
             "vcs-provider-id": self.args.vcs_name,
-            "terraform-version": MAX_TERRAFORM_VERSION,
+            "terraform-version": tf_version,
+            'iac-platform': iac_platform,
             "auto-apply": False,
             "operations": True,
             "deletion-protection-enabled": not self.args.disable_deletion_protection,
@@ -1192,13 +1201,15 @@ class MigrationService:
             (terraform_version == "latest" or version.parse(terraform_version) > version.parse(MAX_TERRAFORM_VERSION))
         ) else "terraform"
 
+        working_directory: str = attributes.get("working-directory")
+        working_directory = working_directory.lstrip('/') if working_directory else None
 
         workspace_attrs = {
             "name": attributes["name"],
             "auto-apply": attributes["auto-apply"],
             "operations": attributes["operations"],
             "terraform-version": terraform_version,
-            "working-directory": attributes.get("working-directory"),
+            "working-directory": working_directory,
             "deletion-protection-enabled": not self.args.disable_deletion_protection,
             "remote-state-sharing": global_remote_state,
             "iac-platform": platform,
@@ -1207,6 +1218,7 @@ class MigrationService:
         vcs_id = None
         branch = None
         trigger_patterns = None
+        trigger_prefixes = None
         configuration = self.get_provider_configuration()
         pc_id = configuration["id"] if not is_management_workspace and configuration else None
         vcs_repo = attributes.get("vcs-repo")
@@ -1214,20 +1226,24 @@ class MigrationService:
         if vcs_repo:
             vcs_id = self.get_vcs_provider_id()
             branch = vcs_repo["branch"] if vcs_repo.get("branch") in vcs_repo else None
+            trigger_prefixes = attributes.get("trigger-prefixes")
+            if not trigger_prefixes:
+                trigger_prefixes = vcs_repo.get(
+                    "trigger-prefixes",
+                    [working_directory] if working_directory else []
+            )
 
             workspace_attrs["vcs-repo"] = {
                 "identifier": attributes["vcs-repo-identifier"],
                 "dry-runs-enabled": attributes.get("speculative-enabled", True),
-                "trigger-prefixes": attributes.get("trigger-prefixes", vcs_repo.get("trigger-prefixes", [])),
+                "trigger-prefixes": trigger_prefixes,
                 "branch": branch,
                 "ingress-submodules": vcs_repo["ingress-submodules"],
             }
 
-            if attributes.get("trigger-patterns"):
+            trigger_patterns = attributes.get("trigger-patterns", vcs_repo.get("trigger-patterns", []))
+            if trigger_patterns:
                 trigger_patterns = handle_trigger_patterns(attributes["trigger-patterns"])
-                workspace_attrs["vcs-repo"]["trigger-patterns"] = trigger_patterns
-            elif vcs_repo.get("trigger-patterns"):
-                trigger_patterns = vcs_repo.get("trigger-patterns", [])
                 workspace_attrs["vcs-repo"]["trigger-patterns"] = trigger_patterns
 
         relationships = tf_workspace.get('relationships', {})
@@ -1264,7 +1280,7 @@ class MigrationService:
             "auto_apply": attributes["auto-apply"],
             "execution_mode": execution_mode,
             "terraform_version": terraform_version,
-            "working_directory": attributes.get("working-directory"),
+            "working_directory": working_directory,
             "environment_id": self.get_environment_resource_id(),
             "deletion_protection_enabled": not self.args.disable_deletion_protection,
             "iac_platform": platform,
@@ -1281,8 +1297,8 @@ class MigrationService:
                 "ingress_submodules": vcs_repo["ingress-submodules"],
             }
             resource_attributes["vcs_provider_id"] = self.get_vcs_data()
-            if attributes.get("trigger-prefixes"):
-                resource_attributes["vcs_repo"]["trigger_prefixes"] = attributes["trigger-prefixes"]
+            if trigger_prefixes:
+                resource_attributes["vcs_repo"]["trigger_prefixes"] = trigger_prefixes
 
             if trigger_patterns:
                 resource_attributes["vcs_repo"]["trigger_patterns"] = trigger_patterns
@@ -1350,6 +1366,11 @@ class MigrationService:
         self.scalr.create_state_version(workspace.id, state_attrs)
 
     def create_backend_config(self) -> None:
+        if self.args.skip_post_migration:
+            return
+
+        ConsoleOutput.info("Creating remote backend configuration...")
+
         """Create backend configuration for the management workspace."""
         backend_config = f'''terraform {{
   backend "remote" {{
@@ -1368,6 +1389,8 @@ class MigrationService:
             f.write("# Generated by Scalr Migrator\n")
             f.write(f"# Generated at: {datetime.now().isoformat()}\n\n")
             f.write(backend_config)
+
+        ConsoleOutput.success("Backend remote configuration created, starting workspaces migration...")
 
     def migrate_variable(
         self,
@@ -1539,7 +1562,7 @@ class MigrationService:
         return_code = job.wait()
 
         if return_code == 0:
-            print("Init succeeded")
+            ConsoleOutput.info("Init succeeded")
         else:
             print("Init failed")
             stdout, stderr = job.communicate()
@@ -1592,14 +1615,14 @@ class MigrationService:
             return
 
         backend_config = f'''terraform {{
-          cloud {{
-            organization = "{self.args.tfc_organization}"
-            workspaces {{
-              name = "{tf_workspace['attributes']['name']}"
-            }}
-          }}
-        }}
-        '''
+  cloud {{
+    organization = "{self.args.tfc_organization}"
+    workspaces {{
+      name = "{tf_workspace['attributes']['name']}"
+    }}
+  }}
+}}
+'''
 
         with open(os.path.join(working_directory, "scalr_backend_override.tf"), "w") as f:
             f.write(backend_config)
@@ -1643,7 +1666,7 @@ class MigrationService:
                     return True
             except re.error as e:
                 # If regex fails, fall back to simple string matching
-                print(f"Warning: Invalid pattern '{cleaned_pattern}': {e}. Using simple string matching.")
+                ConsoleOutput.warning(f"Warning: Invalid pattern '{cleaned_pattern}': {e}. Using simple string matching.")
                 if cleaned_pattern.lower() in workspace_name.lower():
                     return True
         return False
@@ -1685,10 +1708,10 @@ class MigrationService:
 
     def get_vcs_provider_id(self) -> str:
         if self.args.vcs_name and not self.vcs_id:
-            vcs_provider = self.scalr.get("vcs-providers", {"query": self.args.vcs_name})["data"][0]
+            vcs_provider = self.scalr.get("vcs-providers", {"query": self.args.vcs_name})["data"]
             if not vcs_provider:
                 raise MissingDataError(f"VCS provider with name '{self.args.vcs_name}' not found.")
-            self.vcs_id = vcs_provider["id"]
+            self.vcs_id = vcs_provider[0]["id"]
 
         return self.vcs_id
 
@@ -1757,16 +1780,17 @@ class MigrationService:
             f"Migrating organization '{tf_organization}'{project_msg} into environment '{self.args.scalr_environment}'"
         )
 
-        # Create management environment and workspace
-        ConsoleOutput.info(f"Creating post-management Scalr environment '{self.args.management_env_name}'...")
-        management_env = self.create_environment(self.args.management_env_name, skip_terraform=True)
+        if not self.args.skip_post_migration:
+            # Create management environment and workspace
+            ConsoleOutput.info(f"Creating post-management Scalr environment '{self.args.management_env_name}'...")
+            management_env = self.create_environment(self.args.management_env_name, skip_terraform=True)
 
-        ConsoleOutput.info(f"Creating post-management Scalr workspace '{self.args.management_workspace_name}'...")
-        self.create_workspace(
-            management_env["id"],
-            self.get_management_workspace_attributes(),
-            is_management_workspace=True
-        )
+            ConsoleOutput.info(f"Creating post-management Scalr workspace '{self.args.management_workspace_name}'...")
+            self.create_workspace(
+                management_env["id"],
+                self.get_management_workspace_attributes(),
+                is_management_workspace=True
+            )
 
         # Create or get the main environment
         ConsoleOutput.info(f"Creating destination Scalr environment '{self.args.scalr_environment}'...")
@@ -1774,9 +1798,7 @@ class MigrationService:
         self.update_provider_configuration(env['id'])
 
         # Create backend configuration for the management workspace
-        ConsoleOutput.info("Creating remote backend configuration...")
         self.create_backend_config()
-        ConsoleOutput.success("Backend remote configuration created, starting workspaces migration...")
 
         # Migrate workspaces
         next_page = 1
@@ -1796,6 +1818,7 @@ class MigrationService:
                         "url": state_consumers['links']['related'],
                         "workspace_name": workspace_name,
                     }})
+
                 if not self.should_migrate_workspace(workspace_name):
                     skipped_workspaces.append(workspace_name)
                     continue
@@ -1889,6 +1912,7 @@ def main():
     parser.add_argument('--tfc-project', type=str, help='TFC project name to filter workspaces by')
     parser.add_argument('--skip-variables', type=str, help='Comma-separated list of variable keys to skip, or "*" to skip all variables')
     parser.add_argument('--use-opentofu', action='store_true', help='Use OpenTofu for workspaces with Terraform version > 1.5.7 instead of downgrading')
+    parser.add_argument('--skip-post-migration', action='store_true', help='Whether to skip post-migrate actions')
 
     args = parser.parse_args()
     

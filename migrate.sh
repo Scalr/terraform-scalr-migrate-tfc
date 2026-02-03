@@ -283,6 +283,7 @@ CMD="$CMD --tfc-organization \"$TFC_ORGANIZATION\""
 [ -n "$SKIP_VARIABLES" ] && CMD="$CMD --skip-variables \"$SKIP_VARIABLES\""
 [ -n "$SCALR_AGENT_POOL_NAME" ] && CMD="$CMD --agent-pool-name \"$SCALR_AGENT_POOL_NAME\""
 [ "$USE_OPENTOFU" = true ] && CMD="$CMD --use-opentofu"
+[ "$SKIP_POST_MIGRATION" = true ] && CMD="$CMD --skip-post-migration"
 
 # Run the migrator
 echo "Running migrator..."
