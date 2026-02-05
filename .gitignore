@@ -35,3 +35,7 @@ override.tf.json
 venv
 generated-terraform/
 terraform-cloud/
+
+# Environment files with secrets
+.env
+.env.*
