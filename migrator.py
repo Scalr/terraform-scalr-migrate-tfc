@@ -1226,12 +1226,13 @@ class MigrationService:
         if vcs_repo:
             vcs_id = self.get_vcs_provider_id()
             branch = vcs_repo["branch"] if vcs_repo.get("branch") in vcs_repo else None
-            trigger_prefixes = attributes.get("trigger-prefixes")
+            trigger_prefixes: list[str] = attributes.get("trigger-prefixes", [])
+
             if not trigger_prefixes:
-                trigger_prefixes = vcs_repo.get(
-                    "trigger-prefixes",
-                    [working_directory] if working_directory else []
-            )
+                trigger_prefixes = vcs_repo.get("trigger-prefixes", [])
+
+            if not attributes.get("working-directory") in trigger_prefixes:
+                trigger_prefixes.append(working_directory)
 
             workspace_attrs["vcs-repo"] = {
                 "identifier": attributes["vcs-repo-identifier"],
