@@ -1431,7 +1431,7 @@ class MigrationService:
         # Create Terraform resource for non-sensitive variables
         var_resource = TerraformResource(
             "scalr_variable",
-            var_key,
+            f"{workspace.name}_{var_key}",
             {
                 "key": var_key,
                 "description": description,
