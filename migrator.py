@@ -1612,7 +1612,7 @@ class MigrationService:
         working_directory = self.tfc.get_current_cv(tf_workspace)
 
         if not working_directory:
-            ConsoleOutput.info("Workspace is not available")
+            ConsoleOutput.info("Cannot migrate sensitive environment variables as configuration version does not exist")
             return
 
         backend_config = f'''terraform {{
