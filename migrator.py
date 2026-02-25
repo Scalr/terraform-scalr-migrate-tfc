@@ -91,7 +91,7 @@ def make_request(
             time.sleep(RATE_LIMIT_DELAY)
 
 def transform_name(name: str) -> str:
-    return name.lower().translate(str.maketrans({' ': '_', '-': '_'}))
+    return f"r_{name.lower().translate(str.maketrans({' ': '_', '-': '_'}))}"
 
 @dataclass
 class MigratorArgs:
@@ -1225,7 +1225,7 @@ class MigrationService:
 
         if vcs_repo:
             vcs_id = self.get_vcs_provider_id()
-            branch = vcs_repo["branch"] if vcs_repo.get("branch") in vcs_repo else None
+            branch = vcs_repo["branch"] if vcs_repo['branch'] else None
             trigger_prefixes: list[str] = attributes.get("trigger-prefixes", [])
 
             if not trigger_prefixes:
