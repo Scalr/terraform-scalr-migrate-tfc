@@ -733,22 +733,41 @@ class ScalrClient(APIClient):
         vcs_id: Optional[str] = None,
         agent_pool_id: Optional[str] = None
     ) -> Dict:
-        data = {
-            "data": {
-                "type": "workspaces",
-                "attributes": attributes,
-                "relationships": {
-                    "environment": {
-                        "data": {
-                            "type": "environments",
-                            "id": env_id
-                        }
-                    },
-                    "vcs-provider": {"data": {"type": "vcs-providers", "id": vcs_id}} if vcs_id else None,
-                    "agent-pool": {"data": {"type": "agent-pools", "id": agent_pool_id}} if agent_pool_id else None,
+        # Build relationships, excluding None values
+        relationships = {
+            "environment": {
+                "data": {
+                    "type": "environments",
+                    "id": env_id
                 }
             }
         }
+
+        if vcs_id:
+            relationships["vcs-provider"] = {"data": {"type": "vcs-providers", "id": vcs_id}}
+
+        if agent_pool_id:
+            relationships["agent-pool"] = {"data": {"type": "agent-pools", "id": agent_pool_id}}
+
+        # Filter out None values from attributes
+        filtered_attributes = {k: v for k, v in attributes.items() if v is not None}
+
+        # Filter out None values from vcs-repo if present
+        if "vcs-repo" in filtered_attributes and filtered_attributes["vcs-repo"]:
+            filtered_attributes["vcs-repo"] = {
+                k: v for k, v in filtered_attributes["vcs-repo"].items() if v is not None
+            }
+
+        data = {
+            "data": {
+                "type": "workspaces",
+                "attributes": filtered_attributes,
+                "relationships": relationships
+            }
+        }
+
+        if os.getenv("SCALR_DEBUG_ENABLED"):
+            ConsoleOutput.debug(f"Creating workspace with payload: {json.dumps(data, indent=2)}")
 
         return self.post("workspaces", data)
 
@@ -1231,16 +1250,23 @@ class MigrationService:
             if not trigger_prefixes:
                 trigger_prefixes = vcs_repo.get("trigger-prefixes", [])
 
-            if not attributes.get("working-directory") in trigger_prefixes:
+            # Only add working_directory if it's not None and not already in the list
+            if working_directory and working_directory not in trigger_prefixes:
                 trigger_prefixes.append(working_directory)
+
+            # Filter out None values from trigger_prefixes
+            trigger_prefixes = [p for p in trigger_prefixes if p is not None]
 
             workspace_attrs["vcs-repo"] = {
                 "identifier": attributes["vcs-repo-identifier"],
                 "dry-runs-enabled": attributes.get("speculative-enabled", True),
-                "trigger-prefixes": trigger_prefixes,
                 "branch": branch,
                 "ingress-submodules": vcs_repo["ingress-submodules"],
             }
+
+            # Only include trigger-prefixes if there are valid values
+            if trigger_prefixes:
+                workspace_attrs["vcs-repo"]["trigger-prefixes"] = trigger_prefixes
 
             trigger_patterns = attributes.get("trigger-patterns", vcs_repo.get("trigger-patterns", []))
             if trigger_patterns:
@@ -1531,7 +1557,17 @@ class MigrationService:
         configuration_variables = root_module.get("variables", {})
 
         for var in configuration_variables:
-            if not "sensitive" in configuration_variables[var]:
+            if "sensitive" not in configuration_variables[var]:
+                continue
+
+            # Only process variables that were skipped from TFC workspace variables
+            if var not in skipped_sensitive_vars:
+                ConsoleOutput.debug(f"Skipping sensitive variable '{var}' - not in TFC workspace variables")
+                continue
+
+            # Make sure the variable value exists in the plan
+            if var not in variables:
+                ConsoleOutput.warning(f"Sensitive variable '{var}' not found in plan variables")
                 continue
 
             ConsoleOutput.info(f"Creating sensitive variable '{var}' from the plan file")
