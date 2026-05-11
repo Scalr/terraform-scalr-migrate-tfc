@@ -81,7 +81,10 @@ def list_all(hostname: str, period: int = None):
                     print("API rate limited, the maximum number of attempts exceeded")
                     sys.exit(1)
             else:
-                print(response.json()["errors"][0])
+                try:
+                    print(response.json()["errors"][0])
+                except Exception:
+                    print(f"Unexpected error: HTTP {status_code}")
                 sys.exit(1)
         return response.json()
 
