@@ -117,6 +117,7 @@ def list_all(hostname: str, period: int = None):
                     if check_period is None or created_at >= check_period:
                         org_total += 1
                     else:
+                        runs_token = None
                         break
 
             print(report % (name, org_total))
