@@ -345,22 +345,36 @@ class ScalrClient(APIClient):
             vcs_id: Optional[str] = None,
             agent_pool_id: Optional[str] = None
     ) -> Dict:
-        data = {
-            "data": {
-                "type": "workspaces",
-                "attributes": attributes,
-                "relationships": {
-                    "environment": {
-                        "data": {
-                            "type": "environments",
-                            "id": env_id
-                        }
-                    },
-                    "vcs-provider": {"data": {"type": "vcs-providers", "id": vcs_id}} if vcs_id else None,
-                    "agent-pool": {"data": {"type": "agent-pools", "id": agent_pool_id}} if agent_pool_id else None,
+        relationships = {
+            "environment": {
+                "data": {
+                    "type": "environments",
+                    "id": env_id,
                 }
             }
         }
+
+        if vcs_id:
+            relationships["vcs-provider"] = {"data": {"type": "vcs-providers", "id": vcs_id}}
+        if agent_pool_id:
+            relationships["agent-pool"] = {"data": {"type": "agent-pools", "id": agent_pool_id}}
+
+        filtered_attributes = {k: v for k, v in attributes.items() if v is not None}
+        if "vcs-repo" in filtered_attributes and filtered_attributes["vcs-repo"]:
+            filtered_attributes["vcs-repo"] = {
+                k: v for k, v in filtered_attributes["vcs-repo"].items() if v is not None
+            }
+
+        data = {
+            "data": {
+                "type": "workspaces",
+                "attributes": filtered_attributes,
+                "relationships": relationships,
+            }
+        }
+
+        if os.getenv("SCALR_DEBUG_ENABLED"):
+            ConsoleOutput.debug(f"Creating workspace with payload: {json.dumps(data, indent=2)}")
 
         return self.post("workspaces", data)
 

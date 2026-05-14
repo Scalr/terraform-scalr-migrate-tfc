@@ -343,7 +343,19 @@ class MigrationService:
         ConsoleOutput.info(f"Creating workspace '{attributes['name']}'...")
 
         terraform_version = self.enforce_max_version(attributes.get("terraform-version", "1.6.0"), 'Workspace')
-        execution_mode = "remote" if attributes.get("operations") else "local"
+        # TFC returns null for these fields when the workspace inherits the value from
+        # organization defaults rather than setting it explicitly. Scalr's API rejects
+        # null for these required booleans, so fall back to TFC's documented defaults.
+        auto_apply = attributes.get("auto-apply")
+        if auto_apply is None:
+            auto_apply = False
+        operations = attributes.get("operations")
+        if operations is None:
+            operations = True
+        speculative_enabled = attributes.get("speculative-enabled")
+        if speculative_enabled is None:
+            speculative_enabled = True
+        execution_mode = "remote" if operations else "local"
         global_remote_state = attributes.get("global-remote-state", False)
 
         platform = "opentofu" if (
@@ -357,8 +369,8 @@ class MigrationService:
 
         workspace_attrs = {
             "name": attributes["name"],
-            "auto-apply": attributes["auto-apply"],
-            "operations": attributes["operations"],
+            "auto-apply": auto_apply,
+            "operations": operations,
             "terraform-version": terraform_version,
             "working-directory": working_directory,
             "deletion-protection-enabled": not self.args.disable_deletion_protection,
@@ -383,16 +395,19 @@ class MigrationService:
             if not trigger_prefixes:
                 trigger_prefixes = vcs_repo.get("trigger-prefixes", [])
 
-            if not attributes.get("working-directory") in trigger_prefixes and not trigger_patterns:
+            if working_directory and working_directory not in trigger_prefixes and not trigger_patterns:
                 trigger_prefixes.append(working_directory)
+
+            trigger_prefixes = [p for p in trigger_prefixes if p is not None]
 
             workspace_attrs["vcs-repo"] = {
                 "identifier": attributes["vcs-repo-identifier"],
-                "dry-runs-enabled": attributes.get("speculative-enabled", True),
-                "trigger-prefixes": trigger_prefixes,
+                "dry-runs-enabled": speculative_enabled,
                 "branch": branch,
                 "ingress-submodules": vcs_repo["ingress-submodules"],
             }
+            if trigger_prefixes:
+                workspace_attrs["vcs-repo"]["trigger-prefixes"] = trigger_prefixes
 
             if trigger_patterns:
                 trigger_patterns = handle_trigger_patterns(attributes["trigger-patterns"])
@@ -430,7 +445,7 @@ class MigrationService:
         # Create Terraform resource
         resource_attributes = {
             "name": attributes["name"],
-            "auto_apply": attributes["auto-apply"],
+            "auto_apply": auto_apply,
             "execution_mode": execution_mode,
             "terraform_version": terraform_version,
             "working_directory": working_directory,
@@ -445,7 +460,7 @@ class MigrationService:
         if vcs_repo:
             resource_attributes["vcs_repo"] = {
                 "identifier": attributes["vcs-repo-identifier"],
-                "dry_runs_enabled": attributes["speculative-enabled"],
+                "dry_runs_enabled": speculative_enabled,
                 "branch": branch,
                 "ingress_submodules": vcs_repo["ingress-submodules"],
             }

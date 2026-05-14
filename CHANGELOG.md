@@ -16,6 +16,10 @@ All notable changes to this project will be documented in this file.
 - Variable set migration only processes TFC sets that are global, attached to the filtered `--tfc-project`, or attached to at least one workspace migrated in this run.
 - TFC-global variable sets use Scalr `is-shared` with no explicit environment relationships; non-global sets use explicit environment access merged on reruns when a matching set already exists by name.
 
+### Fixed
+
+- Fixed `none is not an allowed value` (HTTP 422) error when creating a workspace whose `auto-apply`, `operations`, or `speculative-enabled` attribute is inherited from TFC organization defaults. The migrator now falls back to TFC's documented defaults (`auto-apply=false`, `operations=true`, `speculative-enabled=true`) when these fields are null.
+
 ## [0.3.6] - 2026-01-14
 
 ### Added
