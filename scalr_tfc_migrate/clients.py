@@ -3,6 +3,7 @@ import json
 import os
 import tarfile
 import urllib.error
+import urllib.request
 from typing import Dict, List, Optional
 from urllib.parse import urlencode
 
