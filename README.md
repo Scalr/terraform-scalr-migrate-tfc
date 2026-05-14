@@ -13,6 +13,10 @@ This script will migrate the following objects from TFC to Scalr in bulk:
 - State file migration
   - Preserves state history
 - Variable migration (including sensitive variables from plan files)
+- Variable set migration
+  - Variable set variables (including sensitive values recovery)
+  - Non-global variable set workspace links and environment access updates
+  - Only TFC variable sets in scope for this run are migrated: **global** sets, sets linked to **`--tfc-project`** (when set), and sets linked to **workspaces migrated in this run** (workspace name patterns). TFC-global sets become Scalr **shared** (`is-shared`) variable sets with **no** explicit environment relationships; non-global sets get environment access merged by name across reruns.
 - VCS provider configuration
 - Provider configuration linking
 - Remote state consumers
