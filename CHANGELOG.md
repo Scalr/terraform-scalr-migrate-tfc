@@ -20,10 +20,6 @@ All notable changes to this project will be documented in this file.
 
 - Fixed `none is not an allowed value` (HTTP 422) error when creating a workspace whose `auto-apply`, `operations`, or `speculative-enabled` attribute is inherited from TFC organization defaults. The migrator now falls back to TFC's documented defaults (`auto-apply=false`, `operations=true`, `speculative-enabled=true`) when these fields are null.
 
-### Fixed
-
-- Fixed `none is not an allowed value` (HTTP 422) error when creating a workspace whose `auto-apply`, `operations`, or `speculative-enabled` attribute is inherited from TFC organization defaults. The migrator now falls back to TFC's documented defaults (`auto-apply=false`, `operations=true`, `speculative-enabled=true`) when these fields are null.
-
 ## [0.3.6] - 2026-01-14
 
 ### Added
