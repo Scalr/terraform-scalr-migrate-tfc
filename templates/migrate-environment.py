@@ -2,19 +2,43 @@
 import json
 import sys
 import os
-from typing import Dict, Optional
+from typing import Any, Dict
 import urllib.error
 import urllib.request
 
 
 class APIError(Exception):
     def __init__(self, error: urllib.error.HTTPError) -> None:
-        errors: dict = json.loads(error.read().decode('utf-8'))["errors"][0]
-        self.api_error = errors.get("detail", errors.get("title"))
         self.code = error.code
+        try:
+            raw = error.read().decode("utf-8", errors="replace")
+        except Exception:
+            raw = ""
+        self.api_error = self._message_from_http_error(error, raw)
+
+    @staticmethod
+    def _message_from_http_error(error: urllib.error.HTTPError, raw: str) -> str:
+        text = raw.strip()
+        if not text:
+            reason = getattr(error, "reason", None) or ""
+            return f"HTTP {error.code} {reason}".strip()
+        try:
+            body: Any = json.loads(text)
+        except json.JSONDecodeError:
+            snippet = text.replace("\n", " ")[:280]
+            return f"HTTP {error.code} (response was not JSON): {snippet}"
+        errors = body.get("errors") if isinstance(body, dict) else None
+        if isinstance(errors, list) and errors:
+            err0 = errors[0]
+            if isinstance(err0, dict):
+                return str(err0.get("detail") or err0.get("title") or err0.get("status") or text[:280])
+            return str(err0)
+        if isinstance(body, dict) and isinstance(body.get("message"), str):
+            return body["message"]
+        return text[:500]
 
     def __str__(self) -> str:
-        return self.api_error
+        return str(self.api_error)
 
 
 class APIClient:
@@ -58,34 +82,59 @@ class ScalrClient(APIClient):
 
         super().__init__(hostname, token)
 
-    def create_variable(self, key: str, var_value: str, workspace_id: str) -> Dict:
-        data = {
-            "data": {
-                "type": "vars",
-                "attributes": {
-                    "key": key,
-                    "value": var_value,
-                    "category": "shell",
-                    "sensitive": True,
-                },
-                "relationships": {
-                    "workspace": {
-                        "data": {
-                            "type": "workspaces",
-                            "id": workspace_id,
+    def create_variable(self, key: str, var_value: str, workspace_id: str = "", var_set_id: str = "") -> Dict:
+        if var_set_id:
+            data = {
+                "data": {
+                    "type": "var-set-variables",
+                    "attributes": {
+                        "key": key,
+                        "value": var_value,
+                        "category": "shell",
+                        "sensitive": True,
+                    },
+                    "relationships": {
+                        "var-set": {
+                            "data": {
+                                "type": "var-sets",
+                                "id": var_set_id,
+                            }
                         }
                     }
                 }
             }
-        }
+            return self.post("var-set-variables", data)
 
-        return self.post("vars", data)
+        if workspace_id:
+            data = {
+                "data": {
+                    "type": "vars",
+                    "attributes": {
+                        "key": key,
+                        "value": var_value,
+                        "category": "shell",
+                        "sensitive": True,
+                    },
+                    "relationships": {
+                        "workspace": {
+                            "data": {
+                                "type": "workspaces",
+                                "id": workspace_id,
+                            }
+                        }
+                    }
+                }
+            }
+            return self.post("vars", data)
+
+        raise ValueError("Either workspace_id or var_set_id must be provided")
 
 
 def main():
     input_data = json.load(sys.stdin)
     variables = input_data.get("variables")
-    workspace_id = input_data.get("workspace_id")
+    workspace_id = input_data.get("workspace_id", "")
+    var_set_id = input_data.get("var_set_id", "")
 
     api_client = ScalrClient()
     created = 0
@@ -95,7 +144,7 @@ def main():
         for variable in variables.split(",") if variables else []:
             value = os.environ.get(variable)
             if value is not None:
-                api_client.create_variable(variable, value, workspace_id)
+                api_client.create_variable(variable, value, workspace_id, var_set_id)
                 created += 1
     except APIError as e:
         errors.append(str(e))

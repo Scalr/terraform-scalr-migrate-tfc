@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+## [0.3.7] - 2026-05-14
+
+### Added
+
+- Added support for TFC variable set migration to Scalr.
+- Added migration of variable set workspace links and environment access updates.
+- Added support for sensitive variable set value recovery from plans and TFC runtime environment.
+
+### Changed
+
+- Variable set migration only processes TFC sets that are global, attached to the filtered `--tfc-project`, or attached to at least one workspace migrated in this run.
+- TFC-global variable sets use Scalr `is-shared` with no explicit environment relationships; non-global sets use explicit environment access merged on reruns when a matching set already exists by name.
 
 ## [0.3.6] - 2026-01-14
 
@@ -148,6 +160,8 @@ All notable changes to this project will be documented in this file.
 
 - No migration required from previous versions as this is the first release
 
+[0.3.7]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.3.7
+[0.3.6]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.3.6
 [0.3.5]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.3.5
 [0.3.4]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.3.4
 [0.3.3]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.3.3
