@@ -80,8 +80,20 @@ def list_all(hostname: str, period: int = None):
                 else:
                     print("API rate limited, the maximum number of attempts exceeded")
                     sys.exit(1)
+            elif status_code >= 500:
+                if retry_attempt <= 10:
+                    retry_attempt += 1
+                    print(f"Server error {status_code}, retrying in 30 seconds, attempt #{retry_attempt}")
+                    time.sleep(30)
+                    return fetch_tfc(route, filters, retry_attempt)
+                else:
+                    print(f"Server error {status_code}, maximum retry attempts exceeded")
+                    sys.exit(1)
             else:
-                print(response.json()["errors"][0])
+                try:
+                    print(response.json()["errors"][0])
+                except Exception:
+                    print(f"Unexpected error: HTTP {status_code}")
                 sys.exit(1)
         return response.json()
 
@@ -117,6 +129,7 @@ def list_all(hostname: str, period: int = None):
                     if check_period is None or created_at >= check_period:
                         org_total += 1
                     else:
+                        runs_token = None
                         break
 
             print(report % (name, org_total))
