@@ -80,22 +80,26 @@ read_tfrc_credentials() {
             return
         fi
         
-        # Read Scalr token
-        local scalr_token
-        scalr_token=$(jq -r ".credentials.\"$SCALR_HOSTNAME\".token" "$credentials_file" 2>/dev/null)
-        if [ "$scalr_token" != "null" ]; then
-            export SCALR_TOKEN="$scalr_token"
+        # Read Scalr token only if not already provided via CLI or environment
+        if [ -z "$SCALR_TOKEN" ]; then
+            local scalr_token
+            scalr_token=$(jq -r ".credentials.\"$SCALR_HOSTNAME\".token" "$credentials_file" 2>/dev/null)
+            if [ "$scalr_token" != "null" ] && [ -n "$scalr_token" ]; then
+                export SCALR_TOKEN="$scalr_token"
+            fi
         fi
 
         if [ -z "$TFC_HOSTNAME" ]; then
           export TFC_HOSTNAME="app.terraform.io"
         fi
 
-        # Read TFC token
-        local tfc_token
-        tfc_token=$(jq -r ".credentials.\"$TFC_HOSTNAME\".token" "$credentials_file" 2>/dev/null)
-        if [ "$tfc_token" != "null" ]; then
-            export TFC_TOKEN="$tfc_token"
+        # Read TFC token only if not already provided via CLI or environment
+        if [ -z "$TFC_TOKEN" ]; then
+            local tfc_token
+            tfc_token=$(jq -r ".credentials.\"$TFC_HOSTNAME\".token" "$credentials_file" 2>/dev/null)
+            if [ "$tfc_token" != "null" ] && [ -n "$tfc_token" ]; then
+                export TFC_TOKEN="$tfc_token"
+            fi
         fi
     fi
 }
@@ -156,6 +160,7 @@ show_help() {
     echo "  --skip-backend-secrets            Skip creating shell variables in Scalr"
     echo "  --skip-tfc-lock                   Skip locking of the TFC/E workspaces after migration"
     echo "  --skip-post-migration             Skip post-migration Terraform steps (fmt, init, apply)"
+    echo "  --skip-variable-sets              Skip migration of TFC variable sets to Scalr"
     echo "  --management-env-name NAME        Name of the management environment (default: scalr-admin)"
     echo "  --disable-deletion-protection     Disable deletion protection in workspace resources"
     echo "  --skip-variables PATTERNS         Comma-separated list of variable keys to skip, or '*' to skip all variables"
@@ -184,6 +189,8 @@ while [[ $# -gt 0 ]]; do
             case $1 in
                 -v=*|--vcs-name=*) env_var="SCALR_VCS_NAME" ;;
                 -w=*|--workspaces=*) env_var="WORKSPACES" ;;
+                --pc-name=*) env_var="SCALR_PC_NAME" ;;
+                --agent-pool-name=*) env_var="SCALR_AGENT_POOL_NAME" ;;
             esac
             export "$env_var"="$value"
             shift
@@ -195,6 +202,8 @@ while [[ $# -gt 0 ]]; do
             case $1 in
                 -v|--vcs-name) env_var="SCALR_VCS_NAME" ;;
                 -w|--workspaces) env_var="WORKSPACES" ;;
+                --pc-name) env_var="SCALR_PC_NAME" ;;
+                --agent-pool-name) env_var="SCALR_AGENT_POOL_NAME" ;;
             esac
             export "$env_var"="$2"
             echo "DEBUG: Setting $env_var=$2"
@@ -211,7 +220,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         # Handle boolean flags
-        --skip-workspace-creation|--skip-backend-secrets|--skip-tfc-lock|--skip-post-migration|--disable-deletion-protection|--use-opentofu)
+        --skip-workspace-creation|--skip-backend-secrets|--skip-tfc-lock|--skip-post-migration|--skip-variable-sets|--disable-deletion-protection|--use-opentofu)
             param="${1#--}"  # Remove leading --
             env_var=$(echo "$param" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
             export "$env_var"=true
@@ -284,6 +293,7 @@ CMD="$CMD --tfc-organization \"$TFC_ORGANIZATION\""
 [ -n "$SCALR_AGENT_POOL_NAME" ] && CMD="$CMD --agent-pool-name \"$SCALR_AGENT_POOL_NAME\""
 [ "$USE_OPENTOFU" = true ] && CMD="$CMD --use-opentofu"
 [ "$SKIP_POST_MIGRATION" = true ] && CMD="$CMD --skip-post-migration"
+[ "$SKIP_VARIABLE_SETS" = true ] && CMD="$CMD --skip-variable-sets"
 
 # Run the migrator
 echo "Running migrator..."
@@ -304,9 +314,12 @@ if [ $? -eq 0 ]; then
         terraform_dir="./generated-terraform/$SCALR_ENVIRONMENT"
         cd "$terraform_dir" || exit 1
 
-        terraform fmt -list=false
-        terraform init
-        terraform apply
+        TF_CMD="terraform"
+        [ "$USE_OPENTOFU" = "true" ] && TF_CMD="tofu"
+
+        $TF_CMD fmt -list=false
+        $TF_CMD init
+        $TF_CMD apply
 
         echo "Post-migration steps completed successfully!"
     else

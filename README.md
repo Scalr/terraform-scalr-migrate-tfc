@@ -68,13 +68,24 @@ chmod +x migrate.sh
 
 ## Authentication
 
-Authentication can be performed through the command line by setting the credentials as environment variables or in the Terraform credentials file.
+Authentication can be provided in three ways. When the same value is set in more than one place, this order applies:
+
+1. **Command-line arguments** (highest priority)
+2. **Environment variables**
+3. **`~/.terraform.d/credentials.tfrc.json`** (fallback when tokens are not set elsewhere)
+
+Both `--flag value` and `--flag=value` formats are supported for all options (for example, `--tfc-token "your-token"` or `--tfc-token=your-token`).
 
 ### Command line arguments:
-Note: The Scalr and TFC tokens can be set as environment variables (see below)
 ```bash
-./migrate.sh --tfc-token "your-token" --tfc-organization="my-org" --scalr-hostname "account.scalr.io" --scalr-token "your-token"
+./migrate.sh \
+  --tfc-token "your-token" \
+  --tfc-organization="my-org" \
+  --scalr-hostname "account.scalr.io" \
+  --scalr-token "your-token"
 ```
+
+Inline values passed this way are always used, even if tokens for the same hostnames exist in the credentials file.
 
 ### Environment variables:
 ```bash
@@ -83,9 +94,11 @@ export SCALR_TOKEN="your-token"
 export TFC_TOKEN="your-token"
 ```
 
+Environment variables are used when a value is not passed on the command line. They take precedence over the credentials file.
+
 ### Terraform credentials file (`~/.terraform.d/credentials.tfrc.json`):
 
-When the Scalr hostname is known (via parameter `--scalr-hostname` or `SCALR_HOSTNAME`), the migrator can read the token from the locally cached credentials file (usually written by the `terraform login` command).
+When tokens are not provided via the command line or environment variables, the migrator reads them from the locally cached credentials file (usually written by the `terraform login` command). The Scalr hostname must be known (via `--scalr-hostname` or `SCALR_HOSTNAME`) to look up the Scalr token.
 
 ```json
 {
@@ -130,6 +143,7 @@ terraform login account.scalr.io
 ### Optional Arguments
 
 - `-v|--vcs-name`: VCS provider name in Scalr (required if not using `--skip-workspace-creation` for VCS driven-workspaces)
+- `--scalr-environment`: Scalr environment to create (default: `--tfc-project` if set, otherwise `--tfc-organization`)
 - `--pc-name`: Provider configuration name in Scalr to link to workspaces
 - `--agent-pool-name`: Agent pool name in Scalr to link to workspaces
 - `-w|--workspaces`: Workspace name pattern (supports shell-style wildcards, default: "*")
@@ -137,11 +151,12 @@ terraform login account.scalr.io
 - `--skip-workspace-creation`: Skip workspace creation in Scalr (use if workspaces already exist)
 - `--skip-backend-secrets`: Skip creation of shell variables for backend configuration
 - `--skip-tfc-lock`: Skip locking TFC/E workspaces after migration
-- `--skip-post-migration`: Skip post-migration Terraform steps (fmt, init, apply)
+- `--skip-post-migration`: Skip post-migration Terraform/OpenTofu steps (fmt, init, apply)
+- `--skip-variable-sets`: Skip migration of TFC variable sets to Scalr (workspace-level variables are still migrated)
 - `--management-env-name`: Name of the management environment (default: "scalr-admin")
 - `--disable-deletion-protection`: Disable deletion protection in workspace resources
 - `--tfc-project`: TFC project name to filter workspaces by
-- `--skip-variables`: Comma-separated list of variable patterns to skip, or "*" to skip all variables
+- `--skip-variables`: Comma-separated list of variable key patterns to skip, or `"*"` to skip all variable migration (including variable sets)
 - `--use-opentofu`: Use OpenTofu for workspaces with Terraform version > 1.5.7 instead of downgrading to 1.5.7
 
 ## Generated Files
@@ -154,11 +169,14 @@ The tool generates the following files in the `generated-terraform/$SCALR_ENVIRO
 
 ### Post-Migration
 
-After successful migration, the tool will automatically execute the following steps (unless `--skip-post-migration` is specified):
-1. Navigate to the generated Terraform directory
-2. Run `terraform fmt` to format the generated code
-3. Run `terraform init` to initialize the workspace
-4. Run `terraform apply` to import all previously created resources in the management workspace state file
+After successful migration, the tool automatically runs the following steps (unless `--skip-post-migration` is specified):
+
+1. Navigate to the generated Terraform directory (`generated-terraform/$SCALR_ENVIRONMENT`)
+2. Run `fmt` to format the generated code
+3. Run `init` to initialize the workspace
+4. Run `apply` to import all previously created resources into the management workspace state file
+
+By default these steps use the `terraform` CLI. When `--use-opentofu` is enabled, they use `tofu` instead (`tofu fmt`, `tofu init`, `tofu apply`).
 
 To skip these automatic steps and run them manually, use the `--skip-post-migration` flag.
 
@@ -174,6 +192,7 @@ To skip these automatic steps and run them manually, use the `--skip-post-migrat
 
 1. If you encounter authentication errors:
    - Verify your tokens are correct
+   - Check that command-line tokens are not being overridden (CLI arguments take priority over the credentials file)
    - Check the credentials file format
    - Ensure you have the necessary permissions
 

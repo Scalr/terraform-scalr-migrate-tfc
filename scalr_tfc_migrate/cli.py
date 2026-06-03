@@ -44,6 +44,8 @@ def main():
     parser.add_argument('--use-opentofu', action='store_true',
                         help='Use OpenTofu for workspaces with Terraform version > 1.5.7 instead of downgrading')
     parser.add_argument('--skip-post-migration', action='store_true', help='Whether to skip post-migrate actions')
+    parser.add_argument('--skip-variable-sets', action='store_true',
+                        help='Skip migration of TFC variable sets to Scalr')
 
     args = parser.parse_args()
 

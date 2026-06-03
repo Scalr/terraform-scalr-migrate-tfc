@@ -3,6 +3,23 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+
+## [0.4.1] - 2026-06-03
+
+### Added
+
+- Added `--skip-variable-sets` flag to skip TFC variable set migration while still migrating workspace-level variables.
+
+### Changed
+
+- Post-migration steps (`fmt`, `init`, `apply`) use OpenTofu (`tofu`) when `--use-opentofu` is enabled instead of the Terraform CLI.
+- Updated README with authentication parameter precedence, `--skip-variable-sets`, and OpenTofu post-migration behavior.
+
+### Fixed
+
+- Command-line arguments and environment variables now take precedence over tokens read from `~/.terraform.d/credentials.tfrc.json`.
+- Inline `--pc-name=` and `--agent-pool-name=` arguments in `migrate.sh` now map to the correct environment variables.
+
 ## [0.4.0] - 2026-05-14
 
 ### Added
@@ -164,7 +181,8 @@ All notable changes to this project will be documented in this file.
 
 - No migration required from previous versions as this is the first release
 
-[0.4.0]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.3.7
+[0.4.1]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.4.1
+[0.4.0]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.4.0
 [0.3.6]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.3.6
 [0.3.5]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.3.5
 [0.3.4]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.3.4

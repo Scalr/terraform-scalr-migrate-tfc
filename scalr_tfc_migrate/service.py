@@ -1127,6 +1127,10 @@ class MigrationService:
         return sorted(merged)
 
     def migrate_variable_sets(self, env: Dict, tfc_project_id: Optional[str]) -> None:
+        if self.args.skip_variable_sets:
+            ConsoleOutput.info("Skipping variable sets migration as requested")
+            return
+
         if self.args.skip_variables == "*":
             ConsoleOutput.info("Skipping variable sets migration as all variable migration is disabled")
             return

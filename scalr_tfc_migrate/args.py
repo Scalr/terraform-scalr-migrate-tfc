@@ -31,6 +31,7 @@ class MigratorArgs:
     skip_variables: Optional[str] = None
     use_opentofu: bool = False
     skip_post_migration: bool = False
+    skip_variable_sets: bool = False
 
     @classmethod
     def from_argparse(cls, args: argparse.Namespace) -> 'MigratorArgs':
@@ -58,5 +59,6 @@ class MigratorArgs:
             skip_variables=args.skip_variables,
             use_opentofu=args.use_opentofu,
             skip_post_migration=args.skip_post_migration,
+            skip_variable_sets=args.skip_variable_sets,
         )
 
