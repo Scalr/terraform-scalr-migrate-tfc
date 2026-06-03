@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-## [0.4.1] - 2026-06-03
+## [0.4.2] - 2026-06-03
 
 ### Added
 
@@ -181,7 +181,7 @@ All notable changes to this project will be documented in this file.
 
 - No migration required from previous versions as this is the first release
 
-[0.4.1]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.4.1
+[0.4.2]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.4.2
 [0.4.0]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.4.0
 [0.3.6]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.3.6
 [0.3.5]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.3.5
