@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
-from scalr_tfc_migrate.constants import DEFAULT_MANAGEMENT_ENV_NAME
+from scalr_tfc_migrate import constants
 
 
 @dataclass
@@ -18,18 +18,19 @@ class MigratorArgs:
     vcs_name: Optional[str]
     pc_name: Optional[str]
     workspaces: str
-    skip_workspace_creation: bool
     skip_backend_secrets: bool
     management_workspace_name: str
+    credentials_set_name: str
     agent_pool_name: Optional[str] = None
     account_id: Optional[str] = None
     lock: bool = True
     tfc_project: Optional[str] = None
-    management_env_name: str = DEFAULT_MANAGEMENT_ENV_NAME
+    management_env_name: str = constants.DEFAULT_MANAGEMENT_ENV_NAME
     disable_deletion_protection: bool = False
     debug_enabled: bool = os.getenv("SCALR_DEBUG_ENABLED", False)
     skip_variables: Optional[str] = None
     use_opentofu: bool = False
+    opentofu_version: Optional[str] = None
     skip_post_migration: bool = False
     skip_variable_sets: bool = False
 
@@ -50,7 +51,6 @@ class MigratorArgs:
             pc_name=args.pc_name,
             agent_pool_name=args.agent_pool_name,
             workspaces=args.workspaces or "*",
-            skip_workspace_creation=args.skip_workspace_creation,
             skip_backend_secrets=args.skip_backend_secrets,
             lock=not args.skip_tfc_lock,
             management_env_name=args.management_env_name,
@@ -58,7 +58,8 @@ class MigratorArgs:
             disable_deletion_protection=args.disable_deletion_protection,
             skip_variables=args.skip_variables,
             use_opentofu=args.use_opentofu,
+            opentofu_version=args.opentofu_version,
             skip_post_migration=args.skip_post_migration,
             skip_variable_sets=args.skip_variable_sets,
+            credentials_set_name=args.credentials_set_name if args.credentials_set_name else constants.TFC_MIGRATOR_DEFAULT_SECRETS_VARSET_NAME,
         )
-

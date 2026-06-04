@@ -17,8 +17,8 @@ from packaging import version
 from scalr_tfc_migrate.args import MigratorArgs
 from scalr_tfc_migrate.clients import ScalrClient, TFCClient
 from scalr_tfc_migrate.console import ConsoleOutput
-from scalr_tfc_migrate.constants import MAX_TERRAFORM_VERSION, TFC_MIGRATOR_BACKEND_SECRETS_VARSET_NAME
-from scalr_tfc_migrate.errors import APIError, MissingDataError, MissingMappingError
+from scalr_tfc_migrate.constants import MAX_TERRAFORM_VERSION
+from scalr_tfc_migrate import errors
 from scalr_tfc_migrate.hcl import (
     AbstractTerraformResource,
     HClAttribute,
@@ -61,8 +61,9 @@ class MigrationService:
 
     def get_mapped_scalr_workspace_id(self, tfc_workspace_id) -> AbstractTerraformResource:
         if not self.workspaces_map.get(tfc_workspace_id):
-            raise MissingMappingError(
-                f"The Scalr workspace for the source TFC workspace {tfc_workspace_id} does not exist or was not created within the current runtime.")
+            raise errors.MissingMappingError(
+                f"The Scalr workspace for the source TFC workspace {tfc_workspace_id} does not exist or was not created within the current runtime."
+            )
         return self.workspaces_map[tfc_workspace_id]
 
     def cache_tfc_workspace(self, tf_workspace: Dict) -> None:
@@ -92,17 +93,28 @@ class MigrationService:
         self.args.account_id = accounts[0]["id"]
 
     def load_tofu(self):
-        if self.args.use_opentofu and not self.tofu_version:
-            latest_version = self.scalr.get('software-versions', {
-                "filter[software-type]": "opentofu",
-                "filter[deprecated]": False,
-                "filter[status]": "active",
-                "page[size]": 1,
-                "page[number]": 1
-            })["data"][0]
-            ConsoleOutput.info(
-                f"Migration to Opentofu is enabled, workspaces above 1.5.7 will be migrated to {latest_version['attributes']['version']}")
-            self.tofu_version = latest_version
+        default_filters = {
+            "filter[software-type]": "opentofu",
+            "filter[deprecated]": False,
+            "filter[status]": "active",
+            "page[size]": 1,
+            "page[number]": 1
+        }
+        if self.args.use_opentofu:
+            if self.args.opentofu_version:
+                try:
+                    if version.parse(MAX_TERRAFORM_VERSION) >= version.parse(self.args.opentofu_version):
+                        raise errors.InvalidInputError(f"Opentofu version must be '>=1.6.0', '{self.args.opentofu_version}' given")
+                    default_filters["filter[version]"] = self.args.opentofu_version
+                except version.InvalidVersion as e:
+                    raise errors.InvalidInputError(str(e))
+
+            if not self.tofu_version:
+                latest_version = self.scalr.get('software-versions', default_filters)["data"][0]["attributes"]["version"]
+                ConsoleOutput.info(
+                    f"Migration to Opentofu is enabled, workspaces above 1.5.7 will be migrated to {latest_version}"
+                )
+                self.tofu_version = latest_version
 
     def get_vcs_data(self) -> Optional[TerraformDataSource]:
         if self.args.vcs_name and not self.vcs_data:
@@ -113,6 +125,8 @@ class MigrationService:
             )
 
             self.resource_manager.add_data_source(self.vcs_data)
+        elif not self.args.vcs_name:
+            raise errors.MissingDataError(f"VCS provider with name is required if you are migrating VCS-driven workspaces.")
 
         return self.vcs_data
 
@@ -175,7 +189,7 @@ class MigrationService:
 
     def get_management_workspace_attributes(self):
         iac_platform = 'opentofu' if self.args.use_opentofu else 'terraform'
-        tf_version = self.tofu_version["attributes"]["version"] if self.args.use_opentofu else MAX_TERRAFORM_VERSION
+        tf_version = self.tofu_version if self.args.use_opentofu else MAX_TERRAFORM_VERSION
 
         return {
             "attributes": {
@@ -204,13 +218,13 @@ class MigrationService:
         if self.args.agent_pool_name and not self.agent_pool_id:
             agent_pools = self.scalr.get('agent-pools', {"filter[name]": self.args.agent_pool_name})['data']
             if not len(agent_pools):
-                raise MissingDataError(f"Agent pool with name '{self.args.agent_pool_name}' not found.")
+                raise errors.MissingDataError(f"Agent pool with name '{self.args.agent_pool_name}' not found.")
             agent_pool_id = agent_pools[0]["id"]
             self.agent_pool_id = agent_pool_id
             agents = self.scalr.get('agents', {"filter[agent-pool]": agent_pool_id})['data']
 
             if not len(agents):
-                raise MissingDataError(
+                raise errors.MissingDataError(
                     f"Agent pool with name '{self.args.agent_pool_name}' does not have active agents.")
 
         return self.agent_pool_id
@@ -314,11 +328,10 @@ class MigrationService:
                 ConsoleOutput.warning(f"Workspace uses Terraform {tf_version}. Downgrading to {MAX_TERRAFORM_VERSION}")
                 tf_version = MAX_TERRAFORM_VERSION
             elif tf_version != "latest" or resource_type != "Workspace":
-                tofu_version = self.tofu_version["attributes"]["version"]
                 ConsoleOutput.info(
-                    f"{resource_type} uses Terraform {tf_version}. Using OpenTofu {tofu_version} instead of downgrading."
+                    f"{resource_type} uses Terraform {tf_version}. Using OpenTofu {self.tofu_version} instead of downgrading."
                 )
-                tf_version = tofu_version
+                tf_version = self.tofu_version
 
         return tf_version
 
@@ -592,7 +605,7 @@ class MigrationService:
                 description,
                 relationships,
             )
-        except APIError as e:
+        except errors.APIError as e:
             if e.code == 422:
                 ConsoleOutput.info(f"Variable '{var_key}' already exists")
                 return
@@ -859,7 +872,7 @@ class MigrationService:
                 var_set_id,
                 {"include": "workspaces,projects"},
             )
-        except APIError as e:
+        except errors.APIError as e:
             ConsoleOutput.warning(
                 f"Could not load TFC variable set detail for '{name}' ({var_set_id}) to resolve "
                 f"workspace/project links: {e}"
@@ -893,7 +906,7 @@ class MigrationService:
     def list_all_variable_set_vars_safe(self, varset_id: str) -> List[Dict]:
         try:
             return self.list_all_variable_set_vars(varset_id)
-        except APIError as e:
+        except errors.APIError as e:
             ConsoleOutput.warning(
                 f"Could not list TFC variable set vars for {varset_id} ({e}); treating as empty."
             )
@@ -918,7 +931,7 @@ class MigrationService:
         for workspace_id in workspace_ids:
             try:
                 workspaces.append(self.get_tfc_workspace(workspace_id))
-            except APIError as e:
+            except errors.APIError as e:
                 ConsoleOutput.warning(f"Unable to read workspace '{workspace_id}': {e}")
 
         return sorted(
@@ -957,7 +970,7 @@ class MigrationService:
                 is_hcl=is_hcl,
                 description=description,
             )
-        except APIError as e:
+        except errors.APIError as e:
             if e.code == 422:
                 ConsoleOutput.info(f"Variable '{var_key}' already exists in variable set '{var_set_id}'")
                 return
@@ -1120,7 +1133,7 @@ class MigrationService:
                 for inc in doc.get("included") or []:
                     if inc.get("type") == "environments" and inc.get("id"):
                         merged.add(inc["id"])
-            except APIError as e:
+            except errors.APIError as e:
                 ConsoleOutput.warning(
                     f"Could not read existing Scalr variable set environments ({e}); using current environment only"
                 )
@@ -1154,7 +1167,7 @@ class MigrationService:
 
         for tf_var_set in variable_sets:
             var_set_name = tf_var_set["attributes"]["name"]
-            if var_set_name == TFC_MIGRATOR_BACKEND_SECRETS_VARSET_NAME:
+            if var_set_name == self.args.credentials_set_name:
                 ConsoleOutput.info(
                     f"Skipping variable set '{var_set_name}' "
                     "(migrator-created TFC credentials for remote plans; not migrated to Scalr)"
@@ -1289,9 +1302,9 @@ class MigrationService:
                     scalr_workspace = self.get_mapped_scalr_workspace_id(tf_workspace_id)
                     self.scalr.add_workspace_variable_sets(scalr_workspace.id, [scalr_var_set["id"]])
                     linked_workspaces += 1
-                except MissingMappingError:
+                except errors.MissingMappingError:
                     skipped_unmapped += 1
-                except APIError as e:
+                except errors.APIError as e:
                     if e.code != 422:
                         raise e
 
@@ -1323,7 +1336,7 @@ class MigrationService:
                     # Escape other regex special characters except . and *
                     regex_pattern = re.escape(regex_pattern).replace(r'\.\*', '.*').replace(r'\.', '.')
                 else:
-                    # For patterns without wildcards, use exact match (case insensitive)
+                    # For patterns without wildcards, use exact match (case-insensitive)
                     regex_pattern = re.escape(cleaned_pattern)
 
                 if re.search(regex_pattern, workspace_name, re.IGNORECASE):
@@ -1375,7 +1388,7 @@ class MigrationService:
         if self.args.vcs_name and not self.vcs_id:
             vcs_provider = self.scalr.get("vcs-providers", {"query": self.args.vcs_name})["data"]
             if not vcs_provider:
-                raise MissingDataError(f"VCS provider with name '{self.args.vcs_name}' not found.")
+                raise errors.MissingDataError(f"VCS provider with name '{self.args.vcs_name}' not found.")
             self.vcs_id = vcs_provider[0]["id"]
 
         return self.vcs_id
@@ -1384,7 +1397,7 @@ class MigrationService:
         if self.args.pc_name and not self.provider_config:
             pc_provider = self.scalr.get("provider-configurations", {"filter[name]": self.args.pc_name})["data"][0]
             if not pc_provider:
-                raise MissingDataError(f"Provider configuration with name '{self.args.pc_name}' not found.")
+                raise errors.MissingDataError(f"Provider configuration with name '{self.args.pc_name}' not found.")
             self.provider_config = pc_provider
 
         return self.provider_config
@@ -1530,13 +1543,13 @@ class MigrationService:
                         consumers_data['workspace_name']
                     ).add_attribute('remote_state_consumers', consumer_resources)
                     ConsoleOutput.info(f"Updated state consumers for workspace '{scalr_id}'...")
-            except MissingMappingError as e:
+            except errors.MissingMappingError as e:
                 ConsoleOutput.warning(f"Unable to post-migrate state consumers. {e}")
                 continue
             except RuntimeError as e:
                 ConsoleOutput.warning(e.args[0])
                 continue
-            except APIError as e:
+            except errors.APIError as e:
                 ConsoleOutput.error(f"Unable to update remote state consumers: {e}")
                 continue
 

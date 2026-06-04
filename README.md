@@ -32,7 +32,7 @@ At the end of the migration, the Scalr Terraform provider code will be generated
 - Python 3.x (automatically detects python3.12, python3, or python)
 - Terraform Cloud/Enterprise credentials
 - Scalr credentials
-- [VCS provider configured in Scalr](https://docs.scalr.io/docs/vcs-providers) (if migrating workspaces with VCS)
+- [VCS provider configured in Scalr](https://docs.scalr.io/docs/vcs-providers) and `--vcs-name` set (only for workspaces that use VCS in TFC/E)
 - [Provider configuration in Scalr](https://docs.scalr.io/docs/provider-configurations) (if linking workspaces to provider configurations)
 
 ## Cross-Platform Compatibility
@@ -142,13 +142,12 @@ terraform login account.scalr.io
 
 ### Optional Arguments
 
-- `-v|--vcs-name`: VCS provider name in Scalr (required if not using `--skip-workspace-creation` for VCS driven-workspaces)
+- `-v|--vcs-name`: VCS provider name in Scalr (required when any workspace in scope is VCS-driven; not checked at startup if omitted)
 - `--scalr-environment`: Scalr environment to create (default: `--tfc-project` if set, otherwise `--tfc-organization`)
 - `--pc-name`: Provider configuration name in Scalr to link to workspaces
 - `--agent-pool-name`: Agent pool name in Scalr to link to workspaces
 - `-w|--workspaces`: Workspace name pattern (supports shell-style wildcards, default: "*")
   - Examples: `"prod-*"` (starts with prod-), `"*-staging"` (ends with -staging), `"test?"` (test + any single char)
-- `--skip-workspace-creation`: Skip workspace creation in Scalr (use if workspaces already exist)
 - `--skip-backend-secrets`: Skip creation of shell variables for backend configuration
 - `--skip-tfc-lock`: Skip locking TFC/E workspaces after migration
 - `--skip-post-migration`: Skip post-migration Terraform/OpenTofu steps (fmt, init, apply)
@@ -157,7 +156,9 @@ terraform login account.scalr.io
 - `--disable-deletion-protection`: Disable deletion protection in workspace resources
 - `--tfc-project`: TFC project name to filter workspaces by
 - `--skip-variables`: Comma-separated list of variable key patterns to skip, or `"*"` to skip all variable migration (including variable sets)
-- `--use-opentofu`: Use OpenTofu for workspaces with Terraform version > 1.5.7 instead of downgrading to 1.5.7
+- `--use-opentofu`: Use OpenTofu for workspaces with Terraform version >= 1.6.0 instead of downgrading to 1.5.7
+- `--opentofu-version`: OpenTofu version to use when `--use-opentofu` is set (must be >= 1.6.0; default: latest active OpenTofu version in Scalr)
+- `--credentials-set-name`: Name of the TFC variable set the migrator creates for backend/credential secrets during sensitive environment variable migration (default: `Scalr-Creds`). This set is skipped when migrating variable sets to Scalr.
 
 ## Generated Files
 
@@ -183,7 +184,7 @@ To skip these automatic steps and run them manually, use the `--skip-post-migrat
 ## Limitations
 
 - By default, supports up to Terraform 1.5.7. If a higher version is used, the script will downgrade it to 1.5.7.
-- When `--use-opentofu` is enabled, workspaces with Terraform version > 1.5.7 will use OpenTofu instead of downgrading. This requires Scalr to support OpenTofu.
+- When `--use-opentofu` is enabled, workspaces with Terraform version >= 1.6.0 use OpenTofu (latest active version in Scalr, or the version from `--opentofu-version`) instead of downgrading. This requires Scalr to support OpenTofu.
 - State migration requires at least one state file in the source TFC/E workspace.
 - Sensitive terraform variables migration requires at least one plan file in the source TFC/E workspace.
 - Sensitive environment variables requires triggering of the remote run in a TFC/E workspace

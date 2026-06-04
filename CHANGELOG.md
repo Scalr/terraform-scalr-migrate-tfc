@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-06-04
+
+### Added
+
+- `--opentofu-version` flag to pin the OpenTofu version used when `--use-opentofu` is enabled (default: latest active OpenTofu in Scalr; must be >= 1.6.0).
+- `--credentials-set-name` flag to customize the TFC variable set name used for migrator backend credentials during sensitive environment variable migration (default: `Scalr-Creds`). That set is still excluded from variable set migration to Scalr.
+
+### Removed
+
+- `--skip-workspace-creation` flag and related startup validation in `migrate.sh`.
+
+### Changed
+
+- `--vcs-name` is no longer required at CLI startup; it is required when the migration encounters VCS-driven workspaces.
+- OpenTofu migration threshold documented as Terraform >= 1.6.0 (was described as > 1.5.7).
+- Migrator credentials variable set name is configurable via `--credentials-set-name` instead of a hardcoded constant (`TFC_MIGRATOR_DEFAULT_SECRETS_VARSET_NAME`).
+
+### Breaking Changes
+
+- `--skip-workspace-creation` has been removed. Workspaces are always created if they don't exist in Scalr prior to the migration.
+
 ## [0.4.2] - 2026-06-03
 
 ### Added
@@ -181,6 +202,7 @@ All notable changes to this project will be documented in this file.
 
 - No migration required from previous versions as this is the first release
 
+[0.4.3]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.4.3
 [0.4.2]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.4.2
 [0.4.0]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.4.0
 [0.3.6]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.3.6

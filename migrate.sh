@@ -128,10 +128,6 @@ validate_required_params() {
         missing_params+=("SCALR_ENVIRONMENT")
     fi
     
-    if [ -z "$SCALR_VCS_NAME" ] && [ "$SKIP_WORKSPACE_CREATION" != "true" ]; then
-        missing_params+=("SCALR_VCS_NAME")
-    fi
-    
     if [ ${#missing_params[@]} -ne 0 ]; then
         echo "Missing required parameters: ${missing_params[*]}"
         exit 1
@@ -165,7 +161,9 @@ show_help() {
     echo "  --disable-deletion-protection     Disable deletion protection in workspace resources"
     echo "  --skip-variables PATTERNS         Comma-separated list of variable keys to skip, or '*' to skip all variables"
     echo "  --agent-pool-name NAME            Scalr agent pool name"
-    echo "  --use-opentofu                    Use OpenTofu for workspaces with Terraform version > 1.5.7 instead of downgrading"
+    echo "  --use-opentofu                    Use OpenTofu for workspaces with Terraform version >= 1.6.0 instead of downgrading"
+    echo "  --opentofu-version VERSION        If Opentofu is used, a version to migrate workspaces with Terraform => 1.6.0. Default: latest Opentofu version"
+    echo "  --credentials-set-name NAME       The name of a variable set containing the Scalr credentials to perform migration of the sensitive environment variables. Default: Scalr-Creds"
     echo "  --help                            Show this help message"
     echo ""
     echo "Example:"
@@ -191,12 +189,14 @@ while [[ $# -gt 0 ]]; do
                 -w=*|--workspaces=*) env_var="WORKSPACES" ;;
                 --pc-name=*) env_var="SCALR_PC_NAME" ;;
                 --agent-pool-name=*) env_var="SCALR_AGENT_POOL_NAME" ;;
+                --opentofu-version=*) env_var="SCALR_OPENTOFU_VERSION" ;;
+                --credentials-set-name=*) env_var="SCALR_CREDENTIALS_SET_NAME" ;;
             esac
             export "$env_var"="$value"
             shift
             ;;
         # Handle space-separated format
-        --scalr-hostname|--scalr-token|--scalr-environment|--tfc-hostname|--tfc-token|--tfc-organization|--tfc-project|--vcs-name|--pc-name|--workspaces|--management-env-name|--skip-variables|--agent-pool-name)
+        --scalr-hostname|--scalr-token|--scalr-environment|--tfc-hostname|--tfc-token|--tfc-organization|--tfc-project|--vcs-name|--pc-name|--workspaces|--management-env-name|--skip-variables|--agent-pool-name|--opentofu-version|--credentials-set-name)
             param="${1#--}"  # Remove leading --
             env_var=$(echo "$param" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
             case $1 in
@@ -204,6 +204,8 @@ while [[ $# -gt 0 ]]; do
                 -w|--workspaces) env_var="WORKSPACES" ;;
                 --pc-name) env_var="SCALR_PC_NAME" ;;
                 --agent-pool-name) env_var="SCALR_AGENT_POOL_NAME" ;;
+                --opentofu-version) env_var="SCALR_OPENTOFU_VERSION" ;;
+                --credentials-set-name) env_var="SCALR_CREDENTIALS_SET_NAME" ;;
             esac
             export "$env_var"="$2"
             echo "DEBUG: Setting $env_var=$2"
@@ -283,7 +285,6 @@ CMD="$CMD --tfc-organization \"$TFC_ORGANIZATION\""
 [ -n "$SCALR_VCS_NAME" ] && CMD="$CMD --vcs-name \"$SCALR_VCS_NAME\""
 [ -n "$SCALR_PC_NAME" ] && CMD="$CMD --pc-name \"$SCALR_PC_NAME\""
 [ -n "$WORKSPACES" ] && CMD="$CMD -w \"$WORKSPACES\""
-[ "$SKIP_WORKSPACE_CREATION" = true ] && CMD="$CMD --skip-workspace-creation"
 [ "$SKIP_BACKEND_SECRETS" = true ] && CMD="$CMD --skip-backend-secrets"
 [ "$SKIP_TFC_LOCK" = true ] && CMD="$CMD --skip-tfc-lock"
 [ -n "$MANAGEMENT_ENV_NAME" ] && CMD="$CMD --management-env-name \"$MANAGEMENT_ENV_NAME\""
@@ -291,6 +292,8 @@ CMD="$CMD --tfc-organization \"$TFC_ORGANIZATION\""
 [ -n "$TFC_PROJECT" ] && CMD="$CMD --tfc-project \"$TFC_PROJECT\""
 [ -n "$SKIP_VARIABLES" ] && CMD="$CMD --skip-variables \"$SKIP_VARIABLES\""
 [ -n "$SCALR_AGENT_POOL_NAME" ] && CMD="$CMD --agent-pool-name \"$SCALR_AGENT_POOL_NAME\""
+[ -n "$SCALR_OPENTOFU_VERSION" ] && CMD="$CMD --opentofu-version \"$SCALR_OPENTOFU_VERSION\""
+[ -n "$SCALR_CREDENTIALS_SET_NAME" ] && CMD="$CMD --credentials-set-name \"$SCALR_CREDENTIALS_SET_NAME\""
 [ "$USE_OPENTOFU" = true ] && CMD="$CMD --use-opentofu"
 [ "$SKIP_POST_MIGRATION" = true ] && CMD="$CMD --skip-post-migration"
 [ "$SKIP_VARIABLE_SETS" = true ] && CMD="$CMD --skip-variable-sets"

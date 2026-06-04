@@ -10,12 +10,6 @@ from scalr_tfc_migrate.errors import APIError
 from scalr_tfc_migrate.service import MigrationService
 
 
-def validate_vcs_name(args: argparse.Namespace) -> None:
-    if not args.skip_workspace_creation and not args.vcs_name:
-        ConsoleOutput.error("Error: If --skip-workspace-creation flag is not set, a valid vcs_name must be passed.")
-        sys.exit(1)
-
-
 def main():
     parser = argparse.ArgumentParser(description='Migrate workspaces from TFC/E to Scalr')
     parser.add_argument('--scalr-hostname', type=str, help='Scalr hostname')
@@ -43,23 +37,21 @@ def main():
                         help='Comma-separated list of variable keys to skip, or "*" to skip all variables')
     parser.add_argument('--use-opentofu', action='store_true',
                         help='Use OpenTofu for workspaces with Terraform version > 1.5.7 instead of downgrading')
+    parser.add_argument('--opentofu-version',  type=str,
+                        help='If Opentofu is used, a version to migrate workspaces with Terraform => 1.6.0. Default: latest Opentofu version')
     parser.add_argument('--skip-post-migration', action='store_true', help='Whether to skip post-migrate actions')
     parser.add_argument('--skip-variable-sets', action='store_true',
                         help='Skip migration of TFC variable sets to Scalr')
+    parser.add_argument('--credentials-set-name', type=str, help='Skip migration of TFC variable sets to Scalr')
 
     args = parser.parse_args()
 
-    # Validate required arguments
     required_args = ['scalr_hostname', 'scalr_token', 'tfc_hostname', 'tfc_token', 'tfc_organization']
     missing_args = [arg for arg in required_args if not getattr(args, arg)]
     if missing_args:
         ConsoleOutput.error(f"Missing required arguments: {', '.join(missing_args)}")
         sys.exit(1)
 
-    # Validate vcs_name if needed
-    validate_vcs_name(args)
-
-    # Convert argparse namespace to MigratorArgs and run migration
     migrator_args = MigratorArgs.from_argparse(args)
     try:
         migration_service = MigrationService(migrator_args)

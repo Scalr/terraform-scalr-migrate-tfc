@@ -9,7 +9,6 @@ from urllib.parse import urlencode
 
 from scalr_tfc_migrate.args import MigratorArgs
 from scalr_tfc_migrate.console import ConsoleOutput
-from scalr_tfc_migrate.constants import TFC_MIGRATOR_BACKEND_SECRETS_VARSET_NAME
 from scalr_tfc_migrate.errors import APIError
 
 
@@ -96,7 +95,7 @@ class TFCClient(APIClient):
             })
 
         return self.create_variable_set(
-            args.tfc_organization, TFC_MIGRATOR_BACKEND_SECRETS_VARSET_NAME, variables_set
+            args.tfc_organization, args.credentials_set_name, variables_set
         )
 
     def get_organization(self, org_name: str) -> Dict:

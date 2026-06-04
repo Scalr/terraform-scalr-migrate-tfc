@@ -3,16 +3,19 @@ import json
 import urllib.error
 from typing import Any
 
-
-class MissingDataError(Exception):
+class MigrationException(Exception):
     pass
 
-
-class MissingMappingError(Exception):
+class MissingDataError(MigrationException):
     pass
 
+class MissingMappingError(MigrationException):
+    pass
 
-class APIError(Exception):
+class InvalidInputError(MigrationException):
+    pass
+
+class APIError(MigrationException):
     def __init__(self, error: urllib.error.HTTPError) -> None:
         self.code = error.code
         try:
