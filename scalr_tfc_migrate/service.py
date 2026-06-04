@@ -19,6 +19,7 @@ from scalr_tfc_migrate.clients import ScalrClient, TFCClient
 from scalr_tfc_migrate.console import ConsoleOutput
 from scalr_tfc_migrate.constants import MAX_TERRAFORM_VERSION
 from scalr_tfc_migrate import errors
+from scalr_tfc_migrate.errors import InvalidInputError
 from scalr_tfc_migrate.hcl import (
     AbstractTerraformResource,
     HClAttribute,
@@ -110,7 +111,10 @@ class MigrationService:
                     raise errors.InvalidInputError(str(e))
 
             if not self.tofu_version:
-                latest_version = self.scalr.get('software-versions', default_filters)["data"][0]["attributes"]["version"]
+                tofu_version = self.scalr.get('software-versions', default_filters)["data"]
+                if not tofu_version:
+                    raise InvalidInputError(f"Version '{self.args.opentofu_version}' does not exist")
+                latest_version = tofu_version[0]["attributes"]["version"]
                 ConsoleOutput.info(
                     f"Migration to Opentofu is enabled, workspaces above 1.5.7 will be migrated to {latest_version}"
                 )
