@@ -113,7 +113,7 @@ class MigrationService:
             if not self.tofu_version:
                 tofu_version = self.scalr.get('software-versions', default_filters)["data"]
                 if not tofu_version:
-                    raise InvalidInputError(f"Version '{self.args.opentofu_version}' does not exist")
+                    raise InvalidInputError(f"OpenTofu version '{self.args.opentofu_version}' does not exist")
                 latest_version = tofu_version[0]["attributes"]["version"]
                 ConsoleOutput.info(
                     f"Migration to Opentofu is enabled, workspaces above 1.5.7 will be migrated to {latest_version}"
@@ -561,7 +561,7 @@ class MigrationService:
 
         """Create backend configuration for the management workspace."""
         backend_config = f'''terraform {{
-  backend "remote" {{
+  cloud {{
     hostname = "{self.args.scalr_hostname}"
     organization = "{self.args.management_env_name}"
     workspaces {{

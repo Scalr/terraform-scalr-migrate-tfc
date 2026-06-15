@@ -7,9 +7,9 @@ import urllib.request
 from typing import Dict, List, Optional
 from urllib.parse import urlencode
 
+from scalr_tfc_migrate import errors
 from scalr_tfc_migrate.args import MigratorArgs
 from scalr_tfc_migrate.console import ConsoleOutput
-from scalr_tfc_migrate.errors import APIError
 
 
 class APIClient:
@@ -21,6 +21,9 @@ class APIClient:
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/vnd.api+json",
         }
+
+    def raise_http_error(self, e: urllib.error.HTTPError) -> None:
+        raise errors.APIError(e)
 
     def _encode_filters(self, filters: Optional[Dict] = None) -> str:
         encoded = ''
@@ -50,7 +53,7 @@ class APIClient:
                     return json.loads(r.decode('utf-8'))
                 return {}
         except urllib.error.HTTPError as e:
-            raise APIError(e)
+            self.raise_http_error(e)
 
     def get(self, route: str, filters: Optional[Dict] = None) -> Dict:
         url = f"https://{self.hostname}{self.api_version}{route}{self._encode_filters(filters)}"
@@ -75,6 +78,9 @@ class TFCClient(APIClient):
             self.cached_version = well_known.get("tfe.v2", "/api/v2/")
 
         super().__init__(hostname, token, self.cached_version)
+
+    def raise_http_error(self, e: urllib.error.HTTPError) -> None:
+        raise errors.TFCAPIError(e)
 
     def init_backend_secrets(self, args: MigratorArgs):
         to_init = {
@@ -117,7 +123,7 @@ class TFCClient(APIClient):
             return projects[0] if projects else None
         except urllib.error.HTTPError as e:
             if e.code != 404:
-                raise APIError(e)
+                raise errors.APIError(e)
             return None
 
     def get_workspace_vars(self, org_name: str, workspace_name: str) -> Dict:
@@ -191,7 +197,7 @@ class TFCClient(APIClient):
             return self.get(f"agent-pools/{agent_pool_id}")
         except urllib.error.HTTPError as e:
             if e.code != 404:
-                raise APIError(e)
+                raise errors.APIError(e)
             return None
 
     def lock_workspace(self, workspace_id: str, reason: str) -> Dict:
@@ -245,6 +251,9 @@ class ScalrClient(APIClient):
     def __init__(self, hostname: str, token: str):
         super().__init__(hostname, token, "/api/iacp/v3/")
 
+    def raise_http_error(self, e: urllib.error.HTTPError) -> None:
+        raise errors.ScalrAPIError(e)
+
     def init_backend_secrets(self, args: MigratorArgs):
         account_relationships = {
             "account": {
@@ -280,7 +289,7 @@ class ScalrClient(APIClient):
                     "Created by migrator",
                     account_relationships
                 )
-            except APIError as e:
+            except errors.APIError as e:
                 if e.code == 422:
                     ConsoleOutput.info(f"Variable '{key}' already exists")
                     continue
@@ -307,7 +316,7 @@ class ScalrClient(APIClient):
             return environments[0] if environments else None
         except urllib.error.HTTPError as e:
             if e.code != 404:
-                raise APIError(e)
+                raise errors.APIError(e)
 
     def get_workspace(self, environment_id, name: str) -> Optional[Dict]:
         try:
@@ -317,7 +326,7 @@ class ScalrClient(APIClient):
             return workspaces[0] if workspaces else None
         except urllib.error.HTTPError as e:
             if e.code != 404:
-                raise APIError(e)
+                raise errors.APIError(e)
 
     def create_environment(self, name: str, account_id: str) -> Dict:
         data = {
@@ -558,7 +567,6 @@ class ScalrClient(APIClient):
     def get_current_state(self, workspace_id: str) -> Optional[Dict]:
         try:
             return self.get(f"workspaces/{workspace_id}/current-state-version")
-        except APIError as e:
+        except errors.APIError as e:
             if e.code != 404:
                 raise e
-

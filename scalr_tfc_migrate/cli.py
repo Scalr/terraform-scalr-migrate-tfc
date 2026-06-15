@@ -57,7 +57,7 @@ def main():
         migration_service = MigrationService(migrator_args)
         migration_service.migrate()
     except APIError as e:
-        ConsoleOutput.error(f"Unable to migrate workspaces from TFC/E to Scalr: {e}")
+        ConsoleOutput.error(f"Unable to migrate workspaces from TFC/E to Scalr. {e}")
         sys.exit(1)
     except Exception as e:
         ConsoleOutput.error(f"Migration failed: {e}")

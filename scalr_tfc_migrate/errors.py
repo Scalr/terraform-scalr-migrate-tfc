@@ -48,3 +48,13 @@ class APIError(MigrationException):
 
     def __str__(self) -> str:
         return str(self.api_error)
+
+
+class ScalrAPIError(APIError):
+    def __str__(self):
+        return f"Scalr Error: {self.api_error}"
+
+
+class TFCAPIError(APIError):
+    def __str__(self):
+        return f"TFC/E Error: {self.api_error}"
