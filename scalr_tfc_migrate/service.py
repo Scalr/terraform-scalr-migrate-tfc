@@ -512,46 +512,82 @@ class MigrationService:
         return workspace_resource
 
     def create_state(self, tf_workspace: Dict, workspace: AbstractTerraformResource) -> None:
+        workspace_name = tf_workspace["attributes"]["name"]
+
+        if self.args.skip_history:
+            # Migrate only the latest state version.
+            current_tfc_state = self.tfc.get_current_state(tf_workspace)
+            if not current_tfc_state:
+                ConsoleOutput.warning("State file is unavailable")
+                return
+            state_versions = [current_tfc_state]
+        else:
+            state_versions = self.tfc.get_all_state_versions(self.args.tfc_organization, workspace_name)
+
+            if not state_versions:
+                # Fall back to the current-state-version relationship in case the
+                # state-versions listing endpoint is unavailable (older TFE).
+                current_tfc_state = self.tfc.get_current_state(tf_workspace)
+                if not current_tfc_state:
+                    ConsoleOutput.warning("State file is unavailable")
+                    return
+                state_versions = [current_tfc_state]
+
         current_scalr_state = self.scalr.get_current_state(workspace.id)
-        current_tfc_state = self.tfc.get_current_state(tf_workspace)
-        if not current_tfc_state:
-            ConsoleOutput.warning("State file is unavailable")
+        existing_serial = (
+            current_scalr_state["data"]["attributes"]["serial"] if current_scalr_state else None
+        )
+
+        # If Scalr already holds the newest TFC serial, the workspace is up to
+        # date and there is nothing to replay.
+        latest_serial = state_versions[-1]["attributes"]["serial"]
+        if existing_serial == latest_serial:
+            ConsoleOutput.info(f"State with serial '{existing_serial}' is up-to-date")
             return
 
-        state = current_tfc_state["attributes"]
+        # Track the workspace's Terraform version so we only patch it when a
+        # state version requires a newer one than is currently set.
+        workspace_version = workspace.attributes.get('terraform-version')
 
-        if not state["hosted-state-download-url"]:
-            ConsoleOutput.warning("State file URL is unavailable")
-            return
-
-        raw_state = self.tfc.make_request(state["hosted-state-download-url"])
-        serial = current_scalr_state["data"]["attributes"]["serial"] if current_scalr_state else None
-        if serial == raw_state["serial"]:
-            ConsoleOutput.info(f"State with serial '{serial}' is up-to-date")
-            return
-
-        raw_state["terraform_version"] = self.enforce_max_version(raw_state["terraform_version"], 'State file')
-
-        if workspace.attributes.get('terraform-version'):
-            if version.parse(raw_state["terraform_version"]) > version.parse(
-                    workspace.attributes.get('terraform-version')):
+        migrated = 0
+        ConsoleOutput.info(f"Found {len(state_versions)} state version(s) to migrate")
+        for state_version in state_versions:
+            attributes = state_version["attributes"]
+            download_url = attributes.get("hosted-state-download-url")
+            if not download_url:
                 ConsoleOutput.warning(
-                    'Terraform version of the current state is bigger then workspace version, upgrading workspace')
+                    f"State version with serial '{attributes.get('serial')}' has no download URL, skipping"
+                )
+                continue
+
+            raw_state = self.tfc.make_request(download_url)
+            raw_state["terraform_version"] = self.enforce_max_version(
+                raw_state["terraform_version"], 'State file'
+            )
+
+            if workspace_version and version.parse(raw_state["terraform_version"]) > version.parse(
+                    workspace_version):
+                ConsoleOutput.warning(
+                    'Terraform version of the state is bigger then workspace version, upgrading workspace')
                 self.scalr.update_workspace(workspace.id, {
                     "data": {"attributes": {"terraform_version": raw_state["terraform_version"]}, "type": "workspaces"}
                 })
+                workspace_version = raw_state["terraform_version"]
 
-        state_content = json.dumps(raw_state).encode('utf-8')
-        encoded_state = binascii.b2a_base64(state_content)
+            state_content = json.dumps(raw_state).encode('utf-8')
+            encoded_state = binascii.b2a_base64(state_content)
 
-        state_attrs = {
-            "serial": raw_state["serial"],
-            "md5": hashlib.md5(state_content).hexdigest(),
-            "lineage": raw_state["lineage"],
-            "state": encoded_state.decode("utf-8")
-        }
+            state_attrs = {
+                "serial": raw_state["serial"],
+                "md5": hashlib.md5(state_content).hexdigest(),
+                "lineage": raw_state["lineage"],
+                "state": encoded_state.decode("utf-8")
+            }
 
-        self.scalr.create_state_version(workspace.id, state_attrs)
+            self.scalr.create_state_version(workspace.id, state_attrs)
+            migrated += 1
+
+        ConsoleOutput.info(f"Migrated {migrated} state version(s) for workspace '{workspace_name}'")
 
     def create_backend_config(self) -> None:
         if self.args.skip_post_migration:
