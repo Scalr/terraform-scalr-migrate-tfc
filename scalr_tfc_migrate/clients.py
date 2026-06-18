@@ -184,6 +184,33 @@ class TFCClient(APIClient):
         current_state_url = current_tf_state["links"]["related"]
         return self.get_by_short_url(current_state_url)["data"]
 
+    def list_state_versions(self, org_name: str, workspace_name: str, page: int = 1) -> Dict:
+        filters = {
+            "filter[workspace][name]": workspace_name,
+            "filter[organization][name]": org_name,
+            "page[size]": 100,
+            "page[number]": page,
+        }
+        return self.get("state-versions", filters)
+
+    def get_all_state_versions(self, org_name: str, workspace_name: str) -> List[Dict]:
+        """Return every state version for a workspace, ordered oldest first.
+
+        TFC returns state versions newest first; we reverse so that uploads can
+        be replayed in chronological order, preserving the serial sequence.
+        """
+        versions: List[Dict] = []
+        page = 1
+        while page:
+            response = self.list_state_versions(org_name, workspace_name, page)
+            versions.extend(response.get("data", []))
+            page = response.get("meta", {}).get("pagination", {}).get("next-page")
+
+        # Order chronologically. created-at is an ISO-8601 timestamp, so a plain
+        # string sort yields oldest first; serial alone can reset across lineages.
+        versions.sort(key=lambda sv: sv["attributes"].get("created-at", ""))
+        return versions
+
     def get_run_plan(self, run_id: str) -> Dict:
         try:
             return self.get(f"runs/{run_id}/plan/json-output")

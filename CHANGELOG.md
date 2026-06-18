@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Added `--skip-history` flag to migrate only the latest state version instead of the complete state history.
+
+### Fixed
+
+- State migration now replays the **complete** workspace state history (every TFC state version, oldest first) instead of only the latest state version, matching the documented "Preserves state history" behavior.
 ## [0.4.3] - 2026-06-04
 
 ### Added

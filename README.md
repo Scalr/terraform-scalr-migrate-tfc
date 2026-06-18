@@ -152,6 +152,7 @@ terraform login account.scalr.io
 - `--skip-tfc-lock`: Skip locking TFC/E workspaces after migration
 - `--skip-post-migration`: Skip post-migration Terraform/OpenTofu steps (fmt, init, apply)
 - `--skip-variable-sets`: Skip migration of TFC variable sets to Scalr (workspace-level variables are still migrated)
+- `--skip-history`: Migrate only the latest state version instead of the complete state history
 - `--management-env-name`: Name of the management environment (default: "scalr-admin")
 - `--disable-deletion-protection`: Disable deletion protection in workspace resources
 - `--tfc-project`: TFC project name to filter workspaces by

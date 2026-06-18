@@ -157,6 +157,7 @@ show_help() {
     echo "  --skip-tfc-lock                   Skip locking of the TFC/E workspaces after migration"
     echo "  --skip-post-migration             Skip post-migration Terraform steps (fmt, init, apply)"
     echo "  --skip-variable-sets              Skip migration of TFC variable sets to Scalr"
+    echo "  --skip-history                    Migrate only the latest state version instead of the complete state history"
     echo "  --management-env-name NAME        Name of the management environment (default: scalr-admin)"
     echo "  --disable-deletion-protection     Disable deletion protection in workspace resources"
     echo "  --skip-variables PATTERNS         Comma-separated list of variable keys to skip, or '*' to skip all variables"
@@ -222,7 +223,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         # Handle boolean flags
-        --skip-workspace-creation|--skip-backend-secrets|--skip-tfc-lock|--skip-post-migration|--skip-variable-sets|--disable-deletion-protection|--use-opentofu)
+        --skip-workspace-creation|--skip-backend-secrets|--skip-tfc-lock|--skip-post-migration|--skip-variable-sets|--skip-history|--disable-deletion-protection|--use-opentofu)
             param="${1#--}"  # Remove leading --
             env_var=$(echo "$param" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
             export "$env_var"=true
@@ -297,6 +298,7 @@ CMD="$CMD --tfc-organization \"$TFC_ORGANIZATION\""
 [ "$USE_OPENTOFU" = true ] && CMD="$CMD --use-opentofu"
 [ "$SKIP_POST_MIGRATION" = true ] && CMD="$CMD --skip-post-migration"
 [ "$SKIP_VARIABLE_SETS" = true ] && CMD="$CMD --skip-variable-sets"
+[ "$SKIP_HISTORY" = true ] && CMD="$CMD --skip-history"
 
 # Run the migrator
 echo "Running migrator..."

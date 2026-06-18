@@ -33,6 +33,7 @@ class MigratorArgs:
     opentofu_version: Optional[str] = None
     skip_post_migration: bool = False
     skip_variable_sets: bool = False
+    skip_history: bool = False
 
     @classmethod
     def from_argparse(cls, args: argparse.Namespace) -> 'MigratorArgs':
@@ -61,5 +62,6 @@ class MigratorArgs:
             opentofu_version=args.opentofu_version,
             skip_post_migration=args.skip_post_migration,
             skip_variable_sets=args.skip_variable_sets,
+            skip_history=args.skip_history,
             credentials_set_name=args.credentials_set_name if args.credentials_set_name else constants.TFC_MIGRATOR_DEFAULT_SECRETS_VARSET_NAME,
         )

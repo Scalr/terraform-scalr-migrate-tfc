@@ -42,6 +42,8 @@ def main():
     parser.add_argument('--skip-post-migration', action='store_true', help='Whether to skip post-migrate actions')
     parser.add_argument('--skip-variable-sets', action='store_true',
                         help='Skip migration of TFC variable sets to Scalr')
+    parser.add_argument('--skip-history', action='store_true',
+                        help='Migrate only the latest state version instead of the complete state history')
     parser.add_argument('--credentials-set-name', type=str, help='Skip migration of TFC variable sets to Scalr')
 
     args = parser.parse_args()
