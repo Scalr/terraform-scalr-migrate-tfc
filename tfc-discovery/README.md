@@ -1,0 +1,71 @@
+# TFC Discovery
+
+Read-only pre-migration scan of a Terraform Cloud/Enterprise organization. It does not touch Scalr and does not migrate anything - it's meant to be run before `../migrate.sh` to help plan the migration:
+
+- **Workspaces with no state** - no resources under management, likely safe to skip migrating.
+- **Cross-workspace dependencies** - edges from remote state consumers and run triggers, plus a ranked list of "hub" workspaces (most dependents) to help decide migration order.
+
+## Requirements
+
+- Python 3.12+ (same requirement as the migrator; `discover.sh` auto-detects `python3.12`/`python3`/`python`)
+- Terraform Cloud/Enterprise credentials
+- No `pip install` needed - this reuses the migrator's shared code (`scalr_tfc_migrate`) one level up, which has no third-party dependencies.
+
+## Usage
+
+```bash
+./discover.sh --tfc-token "your-token" --tfc-organization "my-org"
+```
+
+`--tfc-hostname` defaults to `app.terraform.io`. Authentication follows the same precedence as `migrate.sh`: command-line flags, then environment variables (`TFC_HOSTNAME`, `TFC_TOKEN`, `TFC_ORGANIZATION`, `TFC_PROJECT`), then `~/.terraform.d/credentials.tfrc.json` (populated by `terraform login`). Both `--flag value` and `--flag=value` forms work.
+
+Optional flags:
+
+```bash
+./discover.sh --tfc-token "your-token" --tfc-organization "my-org" \
+  --tfc-project "my-project" \
+  --json report.json
+```
+
+- `--tfc-project`: scope discovery to one project instead of the whole organization.
+- `--json report.json`: also write the full report (every dependency edge, not just the top 10 hubs) to a file.
+
+You can also invoke the Python script directly instead of the wrapper: `python3 discover.py ...`.
+
+### Expected Result
+
+```
+TFC Discovery: my-org
+======================
+
+[INFO] Total workspaces: 6
+
+Workspaces with no state (1)
+=============================
+
+  - placeholder-ws (ws-abc123)
+[INFO] These have no resources under management and likely don't need to be migrated.
+
+Cross-workspace dependencies (3)
+=================================
+
+  network-hub -> app-1  [remote state]
+  network-hub -> app-2  [remote state]
+  app-1 -> app-2  [run trigger]
+
+Hub workspaces (most dependents)
+=================================
+
+  network-hub: 2 dependent(s)
+  app-1: 1 dependent(s)
+```
+
+## Tests
+
+```bash
+cd ..  # repo root - scalr_tfc_migrate must be importable
+pip install pytest
+python3 -m pytest tfc-discovery/tests/test_discovery.py -v
+```
+
+Runs against a duck-typed fake TFC client (no network or credentials needed) covering no-state detection, edge building from both dependency sources, de-duplication, and self-reference filtering.

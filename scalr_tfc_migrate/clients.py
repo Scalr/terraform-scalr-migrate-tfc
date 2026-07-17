@@ -226,6 +226,25 @@ class TFCClient(APIClient):
 
         self.post(f"organizations/{organization}/varsets", data)
 
+    def get_remote_state_consumers(self, workspace_id: str, page: int = 1) -> Dict:
+        """List workspaces allowed to read this workspace's state (this workspace is the producer)."""
+        filters = {"page[size]": 100, "page[number]": page}
+        return self.get(f"workspaces/{workspace_id}/relationships/remote-state-consumers", filters)
+
+    def get_run_triggers(self, workspace_id: str, trigger_type: str = "inbound", page: int = 1) -> Dict:
+        """List run triggers for a workspace.
+
+        trigger_type="inbound" (default) returns triggers where this workspace is
+        triggered by the completion of runs in other ("sourceable") workspaces.
+        trigger_type="outbound" returns triggers where this workspace triggers others.
+        """
+        filters = {
+            "filter[run-trigger][type]": trigger_type,
+            "page[size]": 100,
+            "page[number]": page,
+        }
+        return self.get(f"workspaces/{workspace_id}/run-triggers", filters)
+
     def get_current_cv(self, tf_workspace: dict) -> Optional[str]:
         cv = self.get(f"workspaces/{tf_workspace['id']}/configuration-versions", {"page[size]": 1})['data']
         if not len(cv):
