@@ -15,6 +15,12 @@ class MissingMappingError(MigrationException):
 class InvalidInputError(MigrationException):
     pass
 
+class NetworkError(MigrationException):
+    """Raised when a request can't reach the server at all (timeout, DNS, connection
+    refused, TLS failure, etc.) - as opposed to APIError, which means the server was
+    reached and responded with an HTTP error status."""
+    pass
+
 class APIError(MigrationException):
     def __init__(self, error: urllib.error.HTTPError) -> None:
         self.code = error.code

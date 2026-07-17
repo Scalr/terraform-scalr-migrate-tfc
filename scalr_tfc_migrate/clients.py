@@ -11,6 +11,13 @@ from scalr_tfc_migrate import errors
 from scalr_tfc_migrate.args import MigratorArgs
 from scalr_tfc_migrate.console import ConsoleOutput
 
+# Default socket timeout (seconds) for every HTTP request made through
+# APIClient. Without this, urllib.request.urlopen has no timeout at all and
+# will hang indefinitely on a stalled connection (dead proxy, firewall
+# silently dropping packets, wrong hostname resolving to an unresponsive
+# host, etc.) with zero feedback to the user.
+DEFAULT_REQUEST_TIMEOUT = 30
+
 
 class APIClient:
     def __init__(self, hostname: str, token: str, api_version: str = "v2"):
@@ -37,14 +44,15 @@ class APIClient:
     def download_cv(self, cv_url: str):
         return self.make_request(f"https://{self.hostname}/{cv_url}", decode=False)
 
-    def make_request(self, url: str, method: str = "GET", data: Dict = None, headers: dict = None, decode: bool = True):
+    def make_request(self, url: str, method: str = "GET", data: Dict = None, headers: dict = None,
+                      decode: bool = True, timeout: int = DEFAULT_REQUEST_TIMEOUT):
         if data:
             data = json.dumps(data).encode('utf-8')
 
         req = urllib.request.Request(url, data=data, method=method, headers=headers if headers else self.headers)
 
         try:
-            with urllib.request.urlopen(req) as response:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
                 if response.code != 204:
                     r = response.read()
                     if not decode:
@@ -53,7 +61,13 @@ class APIClient:
                     return json.loads(r.decode('utf-8'))
                 return {}
         except urllib.error.HTTPError as e:
+            # Subclass of URLError - must be caught before the broader except below.
             self.raise_http_error(e)
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            raise errors.NetworkError(
+                f"Could not reach {self.hostname} within {timeout}s ({e}). "
+                "Check the hostname, network/VPN/proxy access, and try again."
+            )
 
     def get(self, route: str, filters: Optional[Dict] = None) -> Dict:
         url = f"https://{self.hostname}{self.api_version}{route}{self._encode_filters(filters)}"

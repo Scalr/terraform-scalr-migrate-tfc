@@ -62,7 +62,9 @@ class DiscoveryService:
         )
 
     def discover(self) -> Dict:
+        ConsoleOutput.info(f"Fetching workspaces for '{self.organization}'...")
         workspaces = self._fetch_all_workspaces()
+        ConsoleOutput.info(f"Found {len(workspaces)} workspace(s). Checking state and dependencies...")
         id_to_name = {ws["id"]: ws["attributes"]["name"] for ws in workspaces}
 
         no_state_workspaces = [
@@ -89,9 +91,10 @@ class DiscoveryService:
                 "type": dep_type,
             })
 
-        for ws in workspaces:
+        for index, ws in enumerate(workspaces, start=1):
             ws_id = ws["id"]
             ws_name = ws["attributes"]["name"]
+            print(f"  [{index}/{len(workspaces)}] {ws_name}")
 
             # Remote state consumers: this workspace is the producer, so edges
             # point from here to each consumer. Iterating every workspace as the
@@ -209,19 +212,24 @@ def main() -> None:
         )
         sys.exit(1)
 
-    tfc = TFCClient(args.tfc_hostname, args.tfc_token)
-
-    project_id = None
-    if args.tfc_project:
-        project = tfc.get_project(args.tfc_organization, args.tfc_project)
-        if not project:
-            ConsoleOutput.error(f"Project '{args.tfc_project}' not found in organization '{args.tfc_organization}'")
-            sys.exit(1)
-        project_id = project["id"]
-
-    service = DiscoveryService(tfc, args.tfc_organization, project_id)
     try:
+        tfc = TFCClient(args.tfc_hostname, args.tfc_token)
+
+        project_id = None
+        if args.tfc_project:
+            project = tfc.get_project(args.tfc_organization, args.tfc_project)
+            if not project:
+                ConsoleOutput.error(
+                    f"Project '{args.tfc_project}' not found in organization '{args.tfc_organization}'"
+                )
+                sys.exit(1)
+            project_id = project["id"]
+
+        service = DiscoveryService(tfc, args.tfc_organization, project_id)
         report = service.discover()
+    except errors.NetworkError as e:
+        ConsoleOutput.error(f"Discovery failed: {e}")
+        sys.exit(1)
     except errors.APIError as e:
         ConsoleOutput.error(f"Discovery failed: {e}")
         sys.exit(1)
