@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Removed
+
+- Leftover `--skip-workspace-creation` scaffolding in `cli.py` (argparse declaration) and `migrate.sh` (help text and flag parsing). The flag was already removed from behavior in 0.4.3, but was still silently accepted by the CLI and shell wrapper without doing anything. It's no longer documented or specially parsed; passing it to `migrate.sh` is now silently ignored the same way any other unrecognized flag is.
+
 ## [0.4.3] - 2026-06-04
 
 ### Added

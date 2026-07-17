@@ -152,7 +152,6 @@ show_help() {
     echo "  --vcs-name NAME                   VCS identifier. Required for creation VCS-driven workspaces."
     echo "  --pc-name NAME                    Provider configuration name to link to workspaces"
     echo "  --workspaces PATTERN              Workspaces to migrate (default: all)"
-    echo "  --skip-workspace-creation         Skip creating new workspaces in Scalr"
     echo "  --skip-backend-secrets            Skip creating shell variables in Scalr"
     echo "  --skip-tfc-lock                   Skip locking of the TFC/E workspaces after migration"
     echo "  --skip-post-migration             Skip post-migration Terraform steps (fmt, init, apply)"
@@ -222,7 +221,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         # Handle boolean flags
-        --skip-workspace-creation|--skip-backend-secrets|--skip-tfc-lock|--skip-post-migration|--skip-variable-sets|--disable-deletion-protection|--use-opentofu)
+        --skip-backend-secrets|--skip-tfc-lock|--skip-post-migration|--skip-variable-sets|--disable-deletion-protection|--use-opentofu)
             param="${1#--}"  # Remove leading --
             env_var=$(echo "$param" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
             export "$env_var"=true
