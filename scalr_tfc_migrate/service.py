@@ -1331,25 +1331,17 @@ class MigrationService:
             if not cleaned_pattern:
                 continue
 
-            try:
-                # Use fnmatch-style pattern matching for simpler, safer pattern matching
-                # Convert shell-style wildcards to regex
-                if '*' in cleaned_pattern or '?' in cleaned_pattern:
-                    # Convert shell wildcards to regex
-                    regex_pattern = cleaned_pattern.replace('*', '.*').replace('?', '.')
-                    # Escape other regex special characters except . and *
-                    regex_pattern = re.escape(regex_pattern).replace(r'\.\*', '.*').replace(r'\.', '.')
-                else:
-                    # For patterns without wildcards, use exact match (case-insensitive)
-                    regex_pattern = re.escape(cleaned_pattern)
-
-                if re.search(regex_pattern, workspace_name, re.IGNORECASE):
+            if '*' in cleaned_pattern or '?' in cleaned_pattern:
+                # fnmatch.translate anchors the pattern (start-to-end), so
+                # "prod-*" matches "prod-network" but not "xprod-network-yy"
+                regex_pattern = fnmatch.translate(cleaned_pattern)
+                if re.match(regex_pattern, workspace_name, re.IGNORECASE):
                     return True
-            except re.error as e:
-                # If regex fails, fall back to simple string matching
-                ConsoleOutput.warning(
-                    f"Warning: Invalid pattern '{cleaned_pattern}': {e}. Using simple string matching.")
-                if cleaned_pattern.lower() in workspace_name.lower():
+            else:
+                # True exact match, case-insensitive. Previously this branch
+                # used an unanchored re.search, which meant "network" would
+                # also match "core-network-prod" (substring, not exact).
+                if cleaned_pattern.lower() == workspace_name.lower():
                     return True
         return False
 
