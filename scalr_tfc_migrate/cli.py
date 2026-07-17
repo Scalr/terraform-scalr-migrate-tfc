@@ -23,8 +23,6 @@ def main():
     parser.add_argument('--pc-name', type=str, help='Provider configuration name')
     parser.add_argument('--agent-pool-name', type=str, help='Scalr agent pool name')
     parser.add_argument('-w', '--workspaces', type=str, help='Workspaces to migrate. By default - all')
-    parser.add_argument('--skip-workspace-creation', action='store_true',
-                        help='Whether to create new workspaces in Scalr. Set to True if the workspace is already created in Scalr.')
     parser.add_argument('--skip-backend-secrets', action='store_true',
                         help='Whether to create shell variables (`SCALR_` and `TFC_`) in Scalr.')
     parser.add_argument('--skip-tfc-lock', action='store_true', help='Whether to skip locking of TFC/E workspaces')
