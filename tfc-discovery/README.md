@@ -1,5 +1,7 @@
 # TFC Discovery
 
+> **Beta.** This is read-only and doesn't touch Scalr or migrate anything, but it's new and hasn't been run against a wide variety of TFC/E organizations yet. Treat its output (especially the `Recommendation` column) as a starting point for planning, not a final answer - verify before acting on it, and please report anything that looks wrong.
+
 Read-only pre-migration scan of a Terraform Cloud/Enterprise organization. It does not touch Scalr and does not migrate anything - it's meant to be run before `../migrate.sh` to help plan the migration:
 
 - **Workspaces with no state** - no resources under management, likely safe to skip migrating.
