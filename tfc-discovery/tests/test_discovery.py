@@ -15,6 +15,7 @@ import csv
 from scalr_tfc_migrate.discovery import (
     DiscoveryService,
     print_report,
+    recommend,
     workspace_has_state,
     workspace_project_id,
     write_csv,
@@ -160,15 +161,35 @@ def test_discover_builds_per_workspace_rows_with_project_and_dependencies():
     assert rows_by_name["A"]["project"] == "Networking"
     assert rows_by_name["A"]["has_state"] is True
     assert rows_by_name["A"]["depends_on"] == []
+    assert rows_by_name["A"]["dependents"] == ["C"]  # C consumes A's state
+    assert rows_by_name["A"]["recommendation"] == "Migrate first - 1 dependent"
 
     assert rows_by_name["B"]["project"] == "Apps"
     assert rows_by_name["B"]["has_state"] is False
     assert rows_by_name["B"]["depends_on"] == []
+    assert rows_by_name["B"]["dependents"] == ["C"]  # C is triggered by B
+    assert rows_by_name["B"]["recommendation"] == "Review - no state, but 1 workspace depend(s) on it"
 
     assert rows_by_name["C"]["project"] == "Networking"
     assert rows_by_name["C"]["has_state"] is True
     # C depends on both A (remote state) and B (run trigger)
     assert sorted(rows_by_name["C"]["depends_on"]) == ["A", "B"]
+    assert rows_by_name["C"]["dependents"] == []
+    assert rows_by_name["C"]["recommendation"] == "Migrate"
+
+    # Rows are sorted by (project, name) for spreadsheet-friendly default ordering:
+    # "Apps" < "Networking" alphabetically, so B comes first, then A/C within Networking.
+    assert [row["name"] for row in report["workspaces"]] == ["B", "A", "C"]
+
+
+def test_recommend():
+    assert recommend(has_state=False, dependent_names=[]) == "Skip - no state, not referenced by other workspaces"
+    assert recommend(has_state=False, dependent_names=["X"]) == "Review - no state, but 1 workspace depend(s) on it"
+    assert recommend(has_state=False, dependent_names=["X", "Y"]) == \
+        "Review - no state, but 2 workspaces depend(s) on it"
+    assert recommend(has_state=True, dependent_names=[]) == "Migrate"
+    assert recommend(has_state=True, dependent_names=["X"]) == "Migrate first - 1 dependent"
+    assert recommend(has_state=True, dependent_names=["X", "Y"]) == "Migrate first - 2 dependents"
 
 
 def test_discover_workspace_row_has_empty_project_when_unknown():
@@ -214,8 +235,14 @@ def test_print_report_groups_dependencies_by_source_hub_first(capsys):
 def test_write_csv(tmp_path):
     report = {
         "workspaces": [
-            {"project": "Networking", "name": "hub", "id": "ws-a", "has_state": True, "depends_on": []},
-            {"project": "Apps", "name": "app-1", "id": "ws-b", "has_state": False, "depends_on": ["hub", "app-2"]},
+            {
+                "project": "Networking", "name": "hub", "id": "ws-a", "has_state": True,
+                "depends_on": [], "dependents": ["app-1", "app-2"], "recommendation": "Migrate first - 2 dependents",
+            },
+            {
+                "project": "Apps", "name": "app-1", "id": "ws-b", "has_state": False,
+                "depends_on": ["hub", "app-2"], "dependents": [], "recommendation": "Skip - no state, not referenced by other workspaces",
+            },
         ]
     }
     csv_path = tmp_path / "report.csv"
@@ -224,6 +251,8 @@ def test_write_csv(tmp_path):
     with open(csv_path, newline="") as f:
         rows = list(csv.reader(f))
 
-    assert rows[0] == ["TFC Project", "Workspace", "Has State", "Depends On"]
-    assert rows[1] == ["Networking", "hub", "Yes", ""]
-    assert rows[2] == ["Apps", "app-1", "No", "hub; app-2"]
+    assert rows[0] == ["TFC Project", "Workspace", "Has State", "Depends On", "Dependents", "Dependent Count",
+                        "Recommendation"]
+    assert rows[1] == ["Networking", "hub", "Yes", "", "app-1; app-2", "2", "Migrate first - 2 dependents"]
+    assert rows[2] == ["Apps", "app-1", "No", "hub; app-2", "", "0",
+                        "Skip - no state, not referenced by other workspaces"]

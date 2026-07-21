@@ -40,6 +40,20 @@ def workspace_project_id(workspace: Dict) -> Optional[str]:
     return (project.get("data") or {}).get("id")
 
 
+def recommend(has_state: bool, dependent_names: List[str]) -> str:
+    """Turn has_state + who-depends-on-this-workspace into an actual call to
+    make, rather than leaving the reader to combine two raw columns themselves."""
+    if not has_state:
+        if dependent_names:
+            plural = "workspace" if len(dependent_names) == 1 else "workspaces"
+            return f"Review - no state, but {len(dependent_names)} {plural} depend(s) on it"
+        return "Skip - no state, not referenced by other workspaces"
+    if dependent_names:
+        plural = "dependent" if len(dependent_names) == 1 else "dependents"
+        return f"Migrate first - {len(dependent_names)} {plural}"
+    return "Migrate"
+
+
 class DiscoveryService:
     def __init__(self, tfc: TFCClient, organization: str, project_id: Optional[str] = None):
         self.tfc = tfc
@@ -94,6 +108,7 @@ class DiscoveryService:
         dependencies: List[Dict] = []
         seen_edges: Set[Tuple[str, str, str]] = set()
         depends_on_by_id: Dict[str, Set[str]] = {}  # dst_id -> set of src_id it depends on
+        dependents_by_id: Dict[str, Set[str]] = {}  # src_id -> set of dst_id that depend on it
 
         def add_edge(src_id: Optional[str], dst_id: Optional[str], dep_type: str) -> None:
             if not src_id or not dst_id or src_id == dst_id:
@@ -110,6 +125,7 @@ class DiscoveryService:
                 "type": dep_type,
             })
             depends_on_by_id.setdefault(dst_id, set()).add(src_id)
+            dependents_by_id.setdefault(src_id, set()).add(dst_id)
 
         for index, ws in enumerate(workspaces, start=1):
             ws_id = ws["id"]
@@ -158,16 +174,23 @@ class DiscoveryService:
         workspace_rows = []
         for ws in workspaces:
             ws_id = ws["id"]
+            has_state = workspace_has_state(ws)
             depends_on_names = sorted(
                 id_to_name.get(src_id, src_id) for src_id in depends_on_by_id.get(ws_id, set())
+            )
+            dependent_names = sorted(
+                id_to_name.get(dst_id, dst_id) for dst_id in dependents_by_id.get(ws_id, set())
             )
             workspace_rows.append({
                 "project": project_names.get(workspace_project_id(ws), ""),
                 "name": ws["attributes"]["name"],
                 "id": ws_id,
-                "has_state": workspace_has_state(ws),
+                "has_state": has_state,
                 "depends_on": depends_on_names,
+                "dependents": dependent_names,
+                "recommendation": recommend(has_state, dependent_names),
             })
+        workspace_rows.sort(key=lambda row: (row["project"], row["name"]))
 
         return {
             "organization": self.organization,
@@ -215,19 +238,26 @@ def print_report(report: Dict) -> None:
 
 def write_csv(report: Dict, path: str) -> None:
     """Write one row per workspace: TFC project, workspace name, whether state
-    exists, and the name(s) of any workspace(s) it depends on (via remote state
-    consumption or a run trigger). Multiple dependencies are semicolon-joined
-    in a single cell rather than one row per dependency, so each workspace
-    still maps to exactly one row."""
+    exists, what it depends on and what depends on it (via remote state
+    consumption or a run trigger, semicolon-joined if more than one), a
+    sortable dependent count, and a computed Recommendation so the sheet is
+    something you can act on directly instead of raw data to cross-reference
+    by hand."""
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["TFC Project", "Workspace", "Has State", "Depends On"])
+        writer.writerow([
+            "TFC Project", "Workspace", "Has State", "Depends On", "Dependents", "Dependent Count",
+            "Recommendation",
+        ])
         for ws in report["workspaces"]:
             writer.writerow([
                 ws["project"],
                 ws["name"],
                 "Yes" if ws["has_state"] else "No",
                 "; ".join(ws["depends_on"]),
+                "; ".join(ws["dependents"]),
+                len(ws["dependents"]),
+                ws["recommendation"],
             ])
 
 

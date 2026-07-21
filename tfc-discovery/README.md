@@ -30,7 +30,7 @@ Optional flags:
 
 - `--tfc-project`: scope discovery to one project instead of the whole organization.
 - `--json report.json`: also write the full report (every dependency edge, not just the top 10 hubs) to a file.
-- `--csv report.csv`: write one row per workspace to a CSV with columns `TFC Project`, `Workspace`, `Has State` (`Yes`/`No`), and `Depends On` (names of any workspace(s) it depends on via remote state consumption or a run trigger, semicolon-separated if more than one, empty if none).
+- `--csv report.csv`: write one row per workspace to a CSV, sorted by project then workspace name: `TFC Project`, `Workspace`, `Has State` (`Yes`/`No`), `Depends On` (what this workspace depends on), `Dependents` (what depends on this workspace), `Dependent Count` (numeric, so you can sort to find hubs), and `Recommendation` - a computed call to make (`Migrate`, `Migrate first - N dependents`, `Skip - no state, not referenced by other workspaces`, or `Review - no state, but N workspace(s) depend(s) on it`) rather than raw data you'd otherwise have to combine yourself.
 
 You can also invoke the Python script directly instead of the wrapper: `python3 discover.py ...`.
 
@@ -63,10 +63,10 @@ Dependencies are grouped by source workspace and sorted by dependent count (most
 With `--csv report.csv`, the file looks like:
 
 ```
-TFC Project,Workspace,Has State,Depends On
-Networking,network-hub,Yes,
-Applications,app-1,Yes,network-hub
-Applications,app-2,No,app-1; network-hub
+TFC Project,Workspace,Has State,Depends On,Dependents,Dependent Count,Recommendation
+Networking,network-hub,Yes,,app-1; app-2,2,Migrate first - 2 dependents
+Applications,app-1,Yes,network-hub,app-2,1,Migrate first - 1 dependent
+Applications,app-2,No,app-1; network-hub,,0,"Skip - no state, not referenced by other workspaces"
 ```
 
 ## Tests
