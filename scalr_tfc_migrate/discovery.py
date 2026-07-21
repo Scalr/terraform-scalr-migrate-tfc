@@ -17,6 +17,7 @@ import csv
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from scalr_tfc_migrate import errors
@@ -54,11 +55,22 @@ def recommend(has_state: bool, dependent_names: List[str]) -> str:
     return "Migrate"
 
 
+def days_since(timestamp: str) -> int:
+    run_time = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    return (datetime.now(timezone.utc) - run_time).days
+
+
 class DiscoveryService:
-    def __init__(self, tfc: TFCClient, organization: str, project_id: Optional[str] = None):
+    def __init__(self, tfc: TFCClient, organization: str, project_id: Optional[str] = None,
+                 stale_days: Optional[int] = None):
         self.tfc = tfc
         self.organization = organization
         self.project_id = project_id
+        # Opt-in: fetching each workspace's latest run is an extra API call per
+        # workspace, on top of the remote-state-consumers/run-triggers calls
+        # already made, so only pay for it when the caller actually wants the
+        # staleness/"are we getting value" check.
+        self.stale_days = stale_days
 
     @staticmethod
     def _paginate(fetch_page: Callable[[int], Dict]) -> List[Dict]:
@@ -127,10 +139,32 @@ class DiscoveryService:
             depends_on_by_id.setdefault(dst_id, set()).add(src_id)
             dependents_by_id.setdefault(src_id, set()).add(dst_id)
 
+        activity_by_id: Dict[str, Dict] = {}  # ws_id -> {"last_run_at": str|None, "days_since_last_run": int|None}
+
         for index, ws in enumerate(workspaces, start=1):
             ws_id = ws["id"]
             ws_name = ws["attributes"]["name"]
             print(f"  [{index}/{len(workspaces)}] {ws_name}")
+
+            # Staleness check (--stale-days): only meaningful for workspaces
+            # that actually have state - an empty workspace with no runs isn't
+            # "paying for infrastructure nobody's touching", it's just unused.
+            if self.stale_days is not None and workspace_has_state(ws):
+                try:
+                    latest_run = self.tfc.get_latest_run(ws_id)
+                except errors.APIError as e:
+                    ConsoleOutput.warning(f"Could not fetch runs for '{ws_name}': {e}")
+                    latest_run = None
+                if latest_run:
+                    last_run_at = latest_run["attributes"]["created-at"]
+                    activity_by_id[ws_id] = {
+                        "last_run_at": last_run_at,
+                        "days_since_last_run": days_since(last_run_at),
+                    }
+                else:
+                    # Has state but no run history at all (e.g. state was pushed
+                    # directly) - at least as notable as a merely old run.
+                    activity_by_id[ws_id] = {"last_run_at": None, "days_since_last_run": None}
 
             # Remote state consumers: this workspace is the producer, so edges
             # point from here to each consumer. Iterating every workspace as the
@@ -181,6 +215,14 @@ class DiscoveryService:
             dependent_names = sorted(
                 id_to_name.get(dst_id, dst_id) for dst_id in dependents_by_id.get(ws_id, set())
             )
+            activity = activity_by_id.get(ws_id)
+            days_inactive = activity["days_since_last_run"] if activity else None
+            # None (not True/False) when this row was never checked at all - either
+            # --stale-days wasn't passed, or this workspace has no state to check.
+            # Distinct from "checked and confirmed not stale" (False).
+            is_stale = None
+            if activity is not None:
+                is_stale = days_inactive is None or days_inactive >= self.stale_days
             workspace_rows.append({
                 "project": project_names.get(workspace_project_id(ws), ""),
                 "name": ws["attributes"]["name"],
@@ -189,8 +231,13 @@ class DiscoveryService:
                 "depends_on": depends_on_names,
                 "dependents": dependent_names,
                 "recommendation": recommend(has_state, dependent_names),
+                "last_run_at": activity["last_run_at"] if activity else None,
+                "days_since_last_run": days_inactive,
+                "stale": is_stale,
             })
         workspace_rows.sort(key=lambda row: (row["project"], row["name"]))
+
+        stale_workspaces = [row for row in workspace_rows if row["stale"]] if self.stale_days is not None else []
 
         return {
             "organization": self.organization,
@@ -199,6 +246,8 @@ class DiscoveryService:
             "dependencies": dependencies,
             "hubs": hubs,
             "workspaces": workspace_rows,
+            "stale_days": self.stale_days,
+            "stale_workspaces": stale_workspaces,
         }
 
 
@@ -235,6 +284,22 @@ def print_report(report: Dict) -> None:
     else:
         ConsoleOutput.info("None found.")
 
+    if report.get("stale_days") is not None:
+        stale = report["stale_workspaces"]
+        ConsoleOutput.section(f"Stale workspaces with state, no runs in {report['stale_days']}+ days ({len(stale)})")
+        if stale:
+            for ws in sorted(stale, key=lambda row: (row["days_since_last_run"] is not None, row["days_since_last_run"]), reverse=True):
+                if ws["days_since_last_run"] is None:
+                    print(f"  - {ws['name']}  (has state, never run)")
+                else:
+                    print(f"  - {ws['name']}  (has state, last run {ws['days_since_last_run']} days ago)")
+            ConsoleOutput.info(
+                "These have resources under management but haven't been run recently - worth checking whether "
+                "they're still needed, since they're being paid for either way."
+            )
+        else:
+            ConsoleOutput.info("None found - every workspace with state has run recently.")
+
 
 def write_csv(report: Dict, path: str) -> None:
     """Write one row per workspace: TFC project, workspace name, whether state
@@ -242,14 +307,20 @@ def write_csv(report: Dict, path: str) -> None:
     consumption or a run trigger, semicolon-joined if more than one), a
     sortable dependent count, and a computed Recommendation so the sheet is
     something you can act on directly instead of raw data to cross-reference
-    by hand."""
+    by hand.
+
+    Last Run / Days Since Last Run / Stale are populated only when --stale-days
+    was used (blank otherwise); the columns are always present so the CSV
+    schema doesn't change shape depending on which flags were passed."""
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([
             "TFC Project", "Workspace", "Has State", "Depends On", "Dependents", "Dependent Count",
-            "Recommendation",
+            "Recommendation", "Last Run", "Days Since Last Run", "Stale",
         ])
         for ws in report["workspaces"]:
+            days_inactive = ws.get("days_since_last_run")
+            stale = ws.get("stale")
             writer.writerow([
                 ws["project"],
                 ws["name"],
@@ -258,6 +329,9 @@ def write_csv(report: Dict, path: str) -> None:
                 "; ".join(ws["dependents"]),
                 len(ws["dependents"]),
                 ws["recommendation"],
+                ws.get("last_run_at") or "",
+                days_inactive if days_inactive is not None else "",
+                "" if stale is None else ("Yes" if stale else "No"),
             ])
 
 
@@ -291,6 +365,9 @@ def main() -> None:
     parser.add_argument("--csv", type=str,
                         help="Optional path to write a CSV (TFC Project, Workspace, Has State, Depends On), "
                              "one row per workspace")
+    parser.add_argument("--stale-days", type=int, default=None,
+                        help="Optional: flag workspaces that have state but no run in this many days or more "
+                             "(costs one extra API call per workspace with state; not checked unless passed)")
     args = parser.parse_args()
 
     if not args.tfc_token:
@@ -318,7 +395,7 @@ def main() -> None:
                 sys.exit(1)
             project_id = project["id"]
 
-        service = DiscoveryService(tfc, args.tfc_organization, project_id)
+        service = DiscoveryService(tfc, args.tfc_organization, project_id, stale_days=args.stale_days)
         report = service.discover()
     except errors.NetworkError as e:
         ConsoleOutput.error(f"Discovery failed: {e}")

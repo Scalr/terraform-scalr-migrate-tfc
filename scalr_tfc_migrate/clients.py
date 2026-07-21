@@ -174,6 +174,12 @@ class TFCClient(APIClient):
         }
         return self.get(f"varsets/{varset_id}/relationships/vars", filters)
 
+    def get_latest_run(self, workspace_id: str) -> Optional[Dict]:
+        """Most recent run of any kind/status for a workspace, or None if it has never had one.
+        Used to gauge activity (e.g. staleness), not plan content - see get_latest_plan for that."""
+        runs = self.get(f"workspaces/{workspace_id}/runs", {"page[size]": 1})["data"]
+        return runs[0] if runs else None
+
     def get_latest_plan(self, tf_workspace: dict, page_size: int = 1) -> Optional[Dict]:
         filters = {"page[size]": page_size}
         runs = self.get(f"workspaces/{tf_workspace['id']}/runs", filters)['data']
