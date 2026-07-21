@@ -41,6 +41,13 @@ def workspace_project_id(workspace: Dict) -> Optional[str]:
     return (project.get("data") or {}).get("id")
 
 
+def workspace_resource_count(workspace: Dict) -> int:
+    """Number of resources in the workspace's current state, straight from the
+    workspace attribute TFC already returns in the workspace list response -
+    no extra API call needed."""
+    return (workspace.get("attributes") or {}).get("resource-count") or 0
+
+
 def recommend(has_state: bool, dependent_names: List[str]) -> str:
     """Turn has_state + who-depends-on-this-workspace into an actual call to
     make, rather than leaving the reader to combine two raw columns themselves."""
@@ -228,6 +235,7 @@ class DiscoveryService:
                 "name": ws["attributes"]["name"],
                 "id": ws_id,
                 "has_state": has_state,
+                "resource_count": workspace_resource_count(ws),
                 "depends_on": depends_on_names,
                 "dependents": dependent_names,
                 "recommendation": recommend(has_state, dependent_names),
@@ -238,10 +246,12 @@ class DiscoveryService:
         workspace_rows.sort(key=lambda row: (row["project"], row["name"]))
 
         stale_workspaces = [row for row in workspace_rows if row["stale"]] if self.stale_days is not None else []
+        total_resources = sum(row["resource_count"] for row in workspace_rows)
 
         return {
             "organization": self.organization,
             "total_workspaces": len(workspaces),
+            "total_resources": total_resources,
             "no_state_workspaces": no_state_workspaces,
             "dependencies": dependencies,
             "hubs": hubs,
@@ -254,6 +264,7 @@ class DiscoveryService:
 def print_report(report: Dict) -> None:
     ConsoleOutput.section(f"TFC Discovery: {report['organization']}")
     ConsoleOutput.info(f"Total workspaces: {report['total_workspaces']}")
+    ConsoleOutput.info(f"Total resources under management: {report['total_resources']}")
 
     no_state = report["no_state_workspaces"]
     ConsoleOutput.section(f"Workspaces with no state ({len(no_state)})")
@@ -289,13 +300,15 @@ def print_report(report: Dict) -> None:
         ConsoleOutput.section(f"Stale workspaces with state, no runs in {report['stale_days']}+ days ({len(stale)})")
         if stale:
             for ws in sorted(stale, key=lambda row: (row["days_since_last_run"] is not None, row["days_since_last_run"]), reverse=True):
+                resources = f"{ws['resource_count']} resource(s)"
                 if ws["days_since_last_run"] is None:
-                    print(f"  - {ws['name']}  (has state, never run)")
+                    print(f"  - {ws['name']}  ({resources}, never run)")
                 else:
-                    print(f"  - {ws['name']}  (has state, last run {ws['days_since_last_run']} days ago)")
+                    print(f"  - {ws['name']}  ({resources}, last run {ws['days_since_last_run']} days ago)")
+            stale_resources = sum(ws["resource_count"] for ws in stale)
             ConsoleOutput.info(
-                "These have resources under management but haven't been run recently - worth checking whether "
-                "they're still needed, since they're being paid for either way."
+                f"{stale_resources} resource(s) across these workspaces haven't been touched recently - worth "
+                "checking whether they're still needed, since they're being paid for either way."
             )
         else:
             ConsoleOutput.info("None found - every workspace with state has run recently.")
@@ -315,8 +328,8 @@ def write_csv(report: Dict, path: str) -> None:
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([
-            "TFC Project", "Workspace", "Has State", "Depends On", "Dependents", "Dependent Count",
-            "Recommendation", "Last Run", "Days Since Last Run", "Stale",
+            "TFC Project", "Workspace", "Has State", "Resource Count", "Depends On", "Dependents",
+            "Dependent Count", "Recommendation", "Last Run", "Days Since Last Run", "Stale",
         ])
         for ws in report["workspaces"]:
             days_inactive = ws.get("days_since_last_run")
@@ -325,6 +338,7 @@ def write_csv(report: Dict, path: str) -> None:
                 ws["project"],
                 ws["name"],
                 "Yes" if ws["has_state"] else "No",
+                ws["resource_count"],
                 "; ".join(ws["depends_on"]),
                 "; ".join(ws["dependents"]),
                 len(ws["dependents"]),
