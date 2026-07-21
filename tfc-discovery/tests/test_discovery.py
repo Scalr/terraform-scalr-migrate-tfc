@@ -12,7 +12,13 @@ A and C have state; B does not.
 """
 import csv
 
-from scalr_tfc_migrate.discovery import DiscoveryService, workspace_has_state, workspace_project_id, write_csv
+from scalr_tfc_migrate.discovery import (
+    DiscoveryService,
+    print_report,
+    workspace_has_state,
+    workspace_project_id,
+    write_csv,
+)
 
 
 def _workspace(ws_id, name, has_state, project_id=None):
@@ -171,6 +177,38 @@ def test_discover_workspace_row_has_empty_project_when_unknown():
     report = DiscoveryService(fake_tfc, "my-org").discover()
 
     assert report["workspaces"][0]["project"] == ""
+
+
+def test_print_report_groups_dependencies_by_source_hub_first(capsys):
+    # Same shape as the real-world case that prompted this: a flat edge list
+    # was hard to read against a separately-printed hub ranking. Dependencies
+    # should now render grouped under their source, sorted by dependent count
+    # (most first), with dependents indented beneath - no separate section.
+    report = {
+        "organization": "tfc-migration-demo",
+        "total_workspaces": 8,
+        "no_state_workspaces": [],
+        "dependencies": [
+            {"from": "ec2_instance", "to": "null_resource_module", "type": "run_trigger"},
+            {"from": "testworkspace-1", "to": "null_resource_module", "type": "run_trigger"},
+            {"from": "test2", "to": "test1", "type": "run_trigger"},
+            {"from": "ec2_instance", "to": "workspace2", "type": "run_trigger"},
+        ],
+        "hubs": [],
+        "workspaces": [],
+    }
+    print_report(report)
+    out = capsys.readouterr().out
+
+    lines = [line for line in out.splitlines() if line.strip()]
+    ec2_index = next(i for i, line in enumerate(lines) if "ec2_instance" in line)
+    # The 2-dependent hub is grouped first, with both its dependents indented
+    # directly beneath it (not interleaved with other sources' edges).
+    assert "(2 dependents)" in lines[ec2_index]
+    assert "-> null_resource_module" in lines[ec2_index + 1]
+    assert "-> workspace2" in lines[ec2_index + 2]
+    # No separate "Hub workspaces" section anymore.
+    assert "Hub workspaces" not in out
 
 
 def test_write_csv(tmp_path):

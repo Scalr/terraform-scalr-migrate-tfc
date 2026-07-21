@@ -51,16 +51,14 @@ Workspaces with no state (1)
 Cross-workspace dependencies (3)
 =================================
 
-  network-hub -> app-1  [remote state]
-  network-hub -> app-2  [remote state]
-  app-1 -> app-2  [run trigger]
-
-Hub workspaces (most dependents)
-=================================
-
-  network-hub: 2 dependent(s)
-  app-1: 1 dependent(s)
+  network-hub  (2 dependents)
+    -> app-1  [remote state]
+    -> app-2  [remote state]
+  app-1  (1 dependent)
+    -> app-2  [run trigger]
 ```
+
+Dependencies are grouped by source workspace and sorted by dependent count (most first), so hubs and everything depending on them read as one block instead of a flat edge list next to a separately-ranked hub list.
 
 With `--csv report.csv`, the file looks like:
 

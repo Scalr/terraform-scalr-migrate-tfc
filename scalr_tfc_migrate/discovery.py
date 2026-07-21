@@ -195,17 +195,22 @@ def print_report(report: Dict) -> None:
     dependencies = report["dependencies"]
     ConsoleOutput.section(f"Cross-workspace dependencies ({len(dependencies)})")
     if dependencies:
+        by_source: Dict[str, List[Dict]] = {}
         for edge in dependencies:
-            label = "remote state" if edge["type"] == "remote_state_consumer" else "run trigger"
-            print(f"  {edge['from']} -> {edge['to']}  [{label}]")
+            by_source.setdefault(edge["from"], []).append(edge)
+
+        # Grouped by source and sorted by dependent count (most first), so
+        # hubs and their dependents read as one block instead of a flat
+        # edge list you have to cross-reference against a separate ranking.
+        for source in sorted(by_source, key=lambda name: (-len(by_source[name]), name)):
+            edges = by_source[source]
+            plural = "dependent" if len(edges) == 1 else "dependents"
+            print(f"  {source}  ({len(edges)} {plural})")
+            for edge in sorted(edges, key=lambda e: e["to"]):
+                label = "remote state" if edge["type"] == "remote_state_consumer" else "run trigger"
+                print(f"    -> {edge['to']}  [{label}]")
     else:
         ConsoleOutput.info("None found.")
-
-    hubs = report["hubs"]
-    if hubs:
-        ConsoleOutput.section("Hub workspaces (most dependents)")
-        for hub in hubs[:10]:
-            print(f"  {hub['name']}: {hub['dependent_count']} dependent(s)")
 
 
 def write_csv(report: Dict, path: str) -> None:
