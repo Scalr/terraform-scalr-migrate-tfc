@@ -24,11 +24,13 @@ Optional flags:
 ```bash
 ./discover.sh --tfc-token "your-token" --tfc-organization "my-org" \
   --tfc-project "my-project" \
-  --json report.json
+  --json report.json \
+  --csv report.csv
 ```
 
 - `--tfc-project`: scope discovery to one project instead of the whole organization.
 - `--json report.json`: also write the full report (every dependency edge, not just the top 10 hubs) to a file.
+- `--csv report.csv`: write one row per workspace to a CSV with columns `TFC Project`, `Workspace`, `Has State` (`Yes`/`No`), and `Depends On` (names of any workspace(s) it depends on via remote state consumption or a run trigger, semicolon-separated if more than one, empty if none).
 
 You can also invoke the Python script directly instead of the wrapper: `python3 discover.py ...`.
 
@@ -60,12 +62,21 @@ Hub workspaces (most dependents)
   app-1: 1 dependent(s)
 ```
 
+With `--csv report.csv`, the file looks like:
+
+```
+TFC Project,Workspace,Has State,Depends On
+Networking,network-hub,Yes,
+Applications,app-1,Yes,network-hub
+Applications,app-2,No,app-1; network-hub
+```
+
 ## Tests
 
 ```bash
 cd ..  # repo root - scalr_tfc_migrate must be importable
 pip install pytest
-python3 -m pytest tfc-discovery/tests/test_discovery.py -v
+python3 -m pytest tfc-discovery/tests/ -v
 ```
 
-Runs against a duck-typed fake TFC client (no network or credentials needed) covering no-state detection, edge building from both dependency sources, de-duplication, and self-reference filtering.
+Runs against a duck-typed fake TFC client (no network or credentials needed) covering no-state detection, edge building from both dependency sources, de-duplication, self-reference filtering, project-name resolution, per-workspace dependency rows, CSV output, and request-timeout/network-error handling.

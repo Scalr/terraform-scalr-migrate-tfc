@@ -13,6 +13,7 @@ TFCClient, ConsoleOutput, and error handling with the migrator instead of
 duplicating them.
 """
 import argparse
+import csv
 import json
 import os
 import sys
@@ -32,6 +33,11 @@ def workspace_has_state(workspace: Dict) -> bool:
     """
     current_state = (workspace.get("relationships") or {}).get("current-state-version") or {}
     return bool(current_state.get("links"))
+
+
+def workspace_project_id(workspace: Dict) -> Optional[str]:
+    project = (workspace.get("relationships") or {}).get("project") or {}
+    return (project.get("data") or {}).get("id")
 
 
 class DiscoveryService:
@@ -61,9 +67,21 @@ class DiscoveryService:
             lambda page: self.tfc.get_workspaces(self.organization, page=page, project_id=self.project_id)
         )
 
+    def _fetch_project_names(self) -> Dict[str, str]:
+        """Map project id -> project name, for the "TFC Project" CSV/report column."""
+        try:
+            projects = self._paginate(
+                lambda page: self.tfc.list_projects(self.organization, page=page)
+            )
+        except errors.APIError as e:
+            ConsoleOutput.warning(f"Could not fetch projects for '{self.organization}': {e}")
+            return {}
+        return {p["id"]: p["attributes"]["name"] for p in projects}
+
     def discover(self) -> Dict:
         ConsoleOutput.info(f"Fetching workspaces for '{self.organization}'...")
         workspaces = self._fetch_all_workspaces()
+        project_names = self._fetch_project_names()
         ConsoleOutput.info(f"Found {len(workspaces)} workspace(s). Checking state and dependencies...")
         id_to_name = {ws["id"]: ws["attributes"]["name"] for ws in workspaces}
 
@@ -75,6 +93,7 @@ class DiscoveryService:
 
         dependencies: List[Dict] = []
         seen_edges: Set[Tuple[str, str, str]] = set()
+        depends_on_by_id: Dict[str, Set[str]] = {}  # dst_id -> set of src_id it depends on
 
         def add_edge(src_id: Optional[str], dst_id: Optional[str], dep_type: str) -> None:
             if not src_id or not dst_id or src_id == dst_id:
@@ -90,6 +109,7 @@ class DiscoveryService:
                 "to_id": dst_id,
                 "type": dep_type,
             })
+            depends_on_by_id.setdefault(dst_id, set()).add(src_id)
 
         for index, ws in enumerate(workspaces, start=1):
             ws_id = ws["id"]
@@ -133,12 +153,29 @@ class DiscoveryService:
             for name, count in sorted(dependents_count.items(), key=lambda kv: kv[1], reverse=True)
         ]
 
+        # One row per workspace, for the CSV export and for anyone consuming the
+        # JSON report who wants a flat table instead of separate lists.
+        workspace_rows = []
+        for ws in workspaces:
+            ws_id = ws["id"]
+            depends_on_names = sorted(
+                id_to_name.get(src_id, src_id) for src_id in depends_on_by_id.get(ws_id, set())
+            )
+            workspace_rows.append({
+                "project": project_names.get(workspace_project_id(ws), ""),
+                "name": ws["attributes"]["name"],
+                "id": ws_id,
+                "has_state": workspace_has_state(ws),
+                "depends_on": depends_on_names,
+            })
+
         return {
             "organization": self.organization,
             "total_workspaces": len(workspaces),
             "no_state_workspaces": no_state_workspaces,
             "dependencies": dependencies,
             "hubs": hubs,
+            "workspaces": workspace_rows,
         }
 
 
@@ -171,6 +208,24 @@ def print_report(report: Dict) -> None:
             print(f"  {hub['name']}: {hub['dependent_count']} dependent(s)")
 
 
+def write_csv(report: Dict, path: str) -> None:
+    """Write one row per workspace: TFC project, workspace name, whether state
+    exists, and the name(s) of any workspace(s) it depends on (via remote state
+    consumption or a run trigger). Multiple dependencies are semicolon-joined
+    in a single cell rather than one row per dependency, so each workspace
+    still maps to exactly one row."""
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["TFC Project", "Workspace", "Has State", "Depends On"])
+        for ws in report["workspaces"]:
+            writer.writerow([
+                ws["project"],
+                ws["name"],
+                "Yes" if ws["has_state"] else "No",
+                "; ".join(ws["depends_on"]),
+            ])
+
+
 def _read_tfrc_token(hostname: Optional[str]) -> Optional[str]:
     if not hostname:
         return None
@@ -198,6 +253,9 @@ def main() -> None:
     parser.add_argument("--tfc-project", type=str, default=os.environ.get("TFC_PROJECT"),
                         help="Optional TFC project name to limit discovery to")
     parser.add_argument("--json", type=str, help="Optional path to also write the full report as JSON")
+    parser.add_argument("--csv", type=str,
+                        help="Optional path to write a CSV (TFC Project, Workspace, Has State, Depends On), "
+                             "one row per workspace")
     args = parser.parse_args()
 
     if not args.tfc_token:
@@ -240,6 +298,10 @@ def main() -> None:
         with open(args.json, "w") as f:
             json.dump(report, f, indent=2)
         ConsoleOutput.success(f"Full report written to {args.json}")
+
+    if args.csv:
+        write_csv(report, args.csv)
+        ConsoleOutput.success(f"CSV written to {args.csv}")
 
 
 if __name__ == "__main__":

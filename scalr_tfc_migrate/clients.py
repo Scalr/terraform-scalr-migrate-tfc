@@ -130,6 +130,13 @@ class TFCClient(APIClient):
             filters["filter[project][id]"] = project_id
         return self.get(f"organizations/{org_name}/workspaces", filters)
 
+    def list_projects(self, org_name: str, page: int = 1) -> Dict:
+        filters = {
+            "page[size]": 100,
+            "page[number]": page,
+        }
+        return self.get(f"organizations/{org_name}/projects", filters)
+
     def get_project(self, org_name: str, project_name: str) -> Optional[Dict]:
         try:
             response = self.get(f"organizations/{org_name}/projects", {"filter[names]": project_name})
