@@ -70,13 +70,3 @@ Networking,network-hub,Yes,,app-1; app-2,2,Migrate first - 2 dependents
 Applications,app-1,Yes,network-hub,app-2,1,Migrate first - 1 dependent
 Applications,app-2,No,app-1; network-hub,,0,"Skip - no state, not referenced by other workspaces"
 ```
-
-## Tests
-
-```bash
-cd ..  # repo root - scalr_tfc_migrate must be importable
-pip install pytest
-python3 -m pytest tfc-discovery/tests/ -v
-```
-
-Runs against a duck-typed fake TFC client (no network or credentials needed) covering no-state detection, edge building from both dependency sources, de-duplication, self-reference filtering, project-name resolution, per-workspace dependency rows, CSV output, and request-timeout/network-error handling.
