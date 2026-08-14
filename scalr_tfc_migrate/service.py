@@ -1080,13 +1080,13 @@ class MigrationService:
             self,
             tf_var_set: Dict,
             tfc_project_id: Optional[str],
-            migrated_tfc_workspace_ids: Set[str],
+            scope_tfc_workspace_ids: Set[str],
     ) -> bool:
         """
         Only migrate variable sets that apply to this run:
         - TFC-global sets, or
         - sets linked to the filtered TFC project (when --tfc-project is set), or
-        - sets linked to at least one TFC workspace migrated in this run.
+        - sets linked to at least one TFC workspace in scope for this run.
         For non-global sets, callers should pass a varset document from GET varsets/:id (with include)
         so workspace/project linkage is present; relationship list sub-routes are not used.
         """
@@ -1098,7 +1098,7 @@ class MigrationService:
 
         if tfc_project_id and tfc_project_id in project_ids:
             return True
-        if workspace_ids & migrated_tfc_workspace_ids:
+        if workspace_ids & scope_tfc_workspace_ids:
             return True
         return False
 
@@ -1143,7 +1143,17 @@ class MigrationService:
                 )
         return sorted(merged)
 
-    def migrate_variable_sets(self, env: Dict, tfc_project_id: Optional[str]) -> None:
+    def migrate_variable_sets(
+            self,
+            env: Dict,
+            tfc_project_id: Optional[str],
+            scope_tfc_workspace_ids: Set[str],
+    ) -> None:
+        """
+        Migrate the TFC variable sets in scope for this run. `scope_tfc_workspace_ids` holds the
+        TFC workspaces the run is scoped to: the workspaces migrated in this run, or - in
+        `--migrate-variable-sets-only` mode - the workspaces matching the run's filters.
+        """
         if self.args.skip_variable_sets:
             ConsoleOutput.info("Skipping variable sets migration as requested")
             return
@@ -1152,10 +1162,9 @@ class MigrationService:
             ConsoleOutput.info("Skipping variable sets migration as all variable migration is disabled")
             return
 
-        migrated_tfc_workspace_ids: Set[str] = set(self.workspaces_map.keys())
-        if not migrated_tfc_workspace_ids and not tfc_project_id:
+        if not scope_tfc_workspace_ids and not tfc_project_id:
             ConsoleOutput.info(
-                "Skipping variable sets migration: no workspaces were migrated in this run "
+                "Skipping variable sets migration: no workspaces are in scope in this run "
                 "and no --tfc-project was specified (cannot scope non-global sets to workspaces)"
             )
             return
@@ -1179,7 +1188,7 @@ class MigrationService:
                 continue
             tf_resolved = self._tfc_var_set_with_relationships(tf_var_set)
             if not self.should_include_tfc_variable_set(
-                    tf_resolved, tfc_project_id, migrated_tfc_workspace_ids
+                    tf_resolved, tfc_project_id, scope_tfc_workspace_ids
             ):
                 skipped_filter += 1
                 ConsoleOutput.info(
@@ -1190,7 +1199,7 @@ class MigrationService:
             ConsoleOutput.info(f"Migrating variable set '{var_set_name}'...")
             try:
                 self.migrate_variable_set(
-                    tf_resolved, env, skip_patterns, migrated_tfc_workspace_ids
+                    tf_resolved, env, skip_patterns, scope_tfc_workspace_ids
                 )
             except Exception as e:
                 ConsoleOutput.error(f"Failed to migrate variable set '{var_set_name}': {e}")
@@ -1208,8 +1217,8 @@ class MigrationService:
             tf_var_set: Dict,
             env: Dict,
             skip_patterns: List[str],
-            migrated_tfc_workspace_ids: Set[str],
-    ) -> bool:
+            scope_tfc_workspace_ids: Set[str],
+    ):
         var_set_id = tf_var_set["id"]
         tf_var_set_attr = tf_var_set["attributes"]
 
@@ -1242,14 +1251,14 @@ class MigrationService:
 
         related_workspace_ids: Set[str] = set()
         if is_global:
-            related_workspace_ids.update(migrated_tfc_workspace_ids)
+            related_workspace_ids.update(scope_tfc_workspace_ids)
         else:
             related_workspace_ids.update(self._tfc_var_set_relationship_ids(tf_var_set, "workspaces"))
             for project_id in self._tfc_var_set_relationship_ids(tf_var_set, "projects"):
                 for tf_workspace in self.list_project_workspaces(project_id):
                     related_workspace_ids.add(tf_workspace["id"])
 
-        related_workspace_ids &= migrated_tfc_workspace_ids
+        related_workspace_ids &= scope_tfc_workspace_ids
 
         candidate_workspaces = self.get_sorted_workspaces(related_workspace_ids)
         var_set_variables = self.list_all_variable_set_vars_safe(var_set_id)
@@ -1287,16 +1296,26 @@ class MigrationService:
                 description=attributes["description"],
             )
 
-        self.migrate_sensitive_varset_terraform_variables(
-            skipped_sensitive_vars=skipped_sensitive_tf_vars,
-            candidate_workspaces=candidate_workspaces,
-            scalr_var_set_id=scalr_var_set["id"],
-        )
-        self.migrate_sensitive_varset_environment_variables(
-            skipped_shell_vars=skipped_sensitive_shell_vars,
-            candidate_workspaces=candidate_workspaces,
-            scalr_var_set_id=scalr_var_set["id"],
-        )
+        # Sensitive values are recovered from TFC plan files and runs, which may be unavailable for
+        # reasons outside of this run's control. Keep such failures from aborting the variable set
+        # migration, so the remaining variables and the workspace links are still created.
+        try:
+            self.migrate_sensitive_varset_terraform_variables(
+                skipped_sensitive_vars=skipped_sensitive_tf_vars,
+                candidate_workspaces=candidate_workspaces,
+                scalr_var_set_id=scalr_var_set["id"],
+            )
+            self.migrate_sensitive_varset_environment_variables(
+                skipped_shell_vars=skipped_sensitive_shell_vars,
+                candidate_workspaces=candidate_workspaces,
+                scalr_var_set_id=scalr_var_set["id"],
+            )
+        except Exception as e:
+            ConsoleOutput.error(
+                f"Unable to migrate sensitive variables of variable set '{var_set_name}': {e}"
+            )
+            if self.args.debug_enabled:
+                ConsoleOutput.debug(f"Traceback: {traceback.format_exc()}")
 
         if not is_global:
             linked_workspaces = 0
@@ -1474,7 +1493,91 @@ class MigrationService:
         # Create backend configuration for the management workspace
         self.create_backend_config()
 
-        # Migrate workspaces
+        if self.args.migrate_variable_sets_only:
+            scope_tfc_workspace_ids = self.collect_variable_set_scope(env, project_id)
+            successful_workspaces: List[str] = []
+            skipped_workspaces: List[str] = []
+        else:
+            successful_workspaces, skipped_workspaces = self.migrate_workspaces(env, project_id)
+            scope_tfc_workspace_ids = set(self.workspaces_map.keys())
+
+        self.migrate_variable_sets(env, project_id, scope_tfc_workspace_ids)
+
+        ConsoleOutput.section("Migration Summary")
+        if self.args.migrate_variable_sets_only:
+            ConsoleOutput.info("Workspace migration was skipped (--migrate-variable-sets-only)")
+        else:
+            ConsoleOutput.success(f"Successfully migrated {len(successful_workspaces)} workspace(s)")
+            if skipped_workspaces:
+                ConsoleOutput.warning(
+                    f"Skipped {len(skipped_workspaces)} workspace(s): {', '.join(skipped_workspaces)}"
+                )
+
+        # Write generated Terraform resources
+        output_dir = self.resource_manager.output_dir
+        self.resource_manager.write_resources(output_dir)
+        ConsoleOutput.success(f"Generated Terraform configuration in directory: {output_dir}")
+
+        # Check and update Terraform credentials
+        self.check_and_update_credentials()
+        ConsoleOutput.info("Credentials have been automatically configured in ~/.terraform.d/credentials.tfrc.json")
+
+    def collect_variable_set_scope(self, env: Dict, project_id: Optional[str]) -> Set[str]:
+        """
+        `--migrate-variable-sets-only`: resolve the TFC workspaces in scope without migrating them.
+        The returned IDs scope which non-global variable sets are migrated, and workspaces that
+        already exist in Scalr are mapped so the variable sets can be linked to them.
+        """
+        ConsoleOutput.section("Resolving workspaces in scope (variable sets only)")
+
+        scope_tfc_workspace_ids: Set[str] = set()
+        missing_in_scalr: List[str] = []
+        next_page = 1
+
+        while True:
+            tfc_workspaces = self.tfc.get_workspaces(self.args.tfc_organization, next_page, project_id=project_id)
+            next_page = tfc_workspaces["meta"]["pagination"]["next-page"]
+
+            for tf_workspace in tfc_workspaces["data"]:
+                self.cache_tfc_workspace(tf_workspace)
+                workspace_name = tf_workspace["attributes"]["name"]
+
+                if not self.should_migrate_workspace(workspace_name):
+                    continue
+
+                scope_tfc_workspace_ids.add(tf_workspace["id"])
+
+                scalr_workspace = self.scalr.get_workspace(env["id"], workspace_name)
+                if not scalr_workspace:
+                    missing_in_scalr.append(workspace_name)
+                    continue
+
+                # Map the existing Scalr workspace without touching it, so variable sets
+                # can still be linked to workspaces migrated by a previous run.
+                workspace_data = TerraformDataSource(
+                    "scalr_workspace", workspace_name, scalr_workspace["attributes"]
+                )
+                workspace_data.id = scalr_workspace["id"]
+                self.create_workspace_map(tf_workspace["id"], workspace_data)
+
+            if not next_page:
+                break
+
+        ConsoleOutput.info(
+            f"{len(scope_tfc_workspace_ids)} TFC workspace(s) in scope, "
+            f"{len(self.workspaces_map)} of them already exist in '{env['attributes']['name']}'"
+        )
+        if missing_in_scalr:
+            ConsoleOutput.warning(
+                f"{len(missing_in_scalr)} workspace(s) in scope do not exist in Scalr yet, variable sets will not be "
+                f"linked to them: {', '.join(missing_in_scalr)}"
+            )
+
+        return scope_tfc_workspace_ids
+
+    def migrate_workspaces(self, env: Dict, project_id: Optional[str]) -> tuple[List[str], List[str]]:
+        """Migrate the in-scope TFC workspaces and post-migrate their remote state consumers."""
+        tf_organization = self.args.tfc_organization
         next_page = 1
         skipped_workspaces = []
         successful_workspaces = []
@@ -1549,19 +1652,5 @@ class MigrationService:
                 ConsoleOutput.error(f"Unable to update remote state consumers: {e}")
                 continue
 
-        self.migrate_variable_sets(env, project_id)
-
-        ConsoleOutput.section("Migration Summary")
-        ConsoleOutput.success(f"Successfully migrated {len(successful_workspaces)} workspace(s)")
-        if skipped_workspaces:
-            ConsoleOutput.warning(f"Skipped {len(skipped_workspaces)} workspace(s): {', '.join(skipped_workspaces)}")
-
-        # Write generated Terraform resources
-        output_dir = self.resource_manager.output_dir
-        self.resource_manager.write_resources(output_dir)
-        ConsoleOutput.success(f"Generated Terraform configuration in directory: {output_dir}")
-
-        # Check and update Terraform credentials
-        self.check_and_update_credentials()
-        ConsoleOutput.info("Credentials have been automatically configured in ~/.terraform.d/credentials.tfrc.json")
+        return successful_workspaces, skipped_workspaces
 

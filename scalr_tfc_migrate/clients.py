@@ -227,13 +227,36 @@ class TFCClient(APIClient):
         self.post(f"organizations/{organization}/varsets", data)
 
     def get_current_cv(self, tf_workspace: dict) -> Optional[str]:
-        cv = self.get(f"workspaces/{tf_workspace['id']}/configuration-versions", {"page[size]": 1})['data']
-        if not len(cv):
+        # Request several versions: TFC exposes a `download` link only while the configuration
+        # archive is still available (uploaded and not yet garbage collected), so the most recent
+        # configuration version is not necessarily downloadable.
+        configuration_versions = self.get(
+            f"workspaces/{tf_workspace['id']}/configuration-versions",
+            {"page[size]": 10}
+        )['data']
+        if not len(configuration_versions):
+            ConsoleOutput.warning("Configuration version is unavailable")
+            return
+
+        download_url = None
+        for cv in configuration_versions:
+            download_url = (cv.get("links") or {}).get("download")
+            if download_url:
+                break
+            ConsoleOutput.info(
+                f"Configuration version '{cv['id']}' (status '{cv['attributes'].get('status')}') "
+                "cannot be downloaded, trying an older one"
+            )
+
+        if not download_url:
+            ConsoleOutput.warning(
+                "None of the recent configuration versions can be downloaded from TFC/E"
+            )
             return
 
         output_dir = "./terraform-cloud"
         os.makedirs(output_dir, exist_ok=True)
-        content = self.download_cv(cv[0]['links']["download"])  # must be bytes
+        content = self.download_cv(download_url)  # must be bytes
         with open(os.path.join(output_dir, f"{tf_workspace['id']}.tar.gz"), "wb") as f:
             f.write(content)
 
@@ -244,7 +267,17 @@ class TFCClient(APIClient):
         with tarfile.open(tar_path, "r:gz") as tar:
             tar.extractall(path=extract_dir, filter='fully_trusted')
 
-        return os.path.join(extract_dir, tf_workspace['attributes']['working-directory'])
+        # TFC returns null for workspaces that run from the repository root.
+        working_directory = tf_workspace['attributes'].get('working-directory') or ''
+        configuration_dir = os.path.join(extract_dir, working_directory)
+
+        if not os.path.isdir(configuration_dir):
+            ConsoleOutput.warning(
+                f"Working directory '{working_directory}' does not exist in the downloaded configuration version"
+            )
+            return
+
+        return configuration_dir
 
 
 class ScalrClient(APIClient):

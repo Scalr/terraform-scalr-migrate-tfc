@@ -3,6 +3,7 @@ import argparse
 import sys
 import traceback
 
+from scalr_tfc_migrate import constants
 from scalr_tfc_migrate.args import MigratorArgs
 from scalr_tfc_migrate.console import ConsoleOutput
 from scalr_tfc_migrate.constants import DEFAULT_MANAGEMENT_ENV_NAME
@@ -28,6 +29,9 @@ def main():
     parser.add_argument('--skip-tfc-lock', action='store_true', help='Whether to skip locking of TFC/E workspaces')
     parser.add_argument('--management-env-name', type=str, default=DEFAULT_MANAGEMENT_ENV_NAME,
                         help=f'Name of the management environment. Default: {DEFAULT_MANAGEMENT_ENV_NAME}')
+    parser.add_argument('--management-workspace-name', type=str,
+                        help='Name of the management workspace that holds the generated Terraform code. '
+                             'Default: the destination Scalr environment name.')
     parser.add_argument('--disable-deletion-protection', action='store_true',
                         help='Disable deletion protection in workspace resources. Default: enabled')
     parser.add_argument('--tfc-project', type=str, help='TFC project name to filter workspaces by')
@@ -40,7 +44,13 @@ def main():
     parser.add_argument('--skip-post-migration', action='store_true', help='Whether to skip post-migrate actions')
     parser.add_argument('--skip-variable-sets', action='store_true',
                         help='Skip migration of TFC variable sets to Scalr')
-    parser.add_argument('--credentials-set-name', type=str, help='Skip migration of TFC variable sets to Scalr')
+    parser.add_argument('--migrate-variable-sets-only', action='store_true',
+                        help='Migrate only TFC variable sets. Workspaces, their states and variables are not '
+                             'migrated, existing Scalr workspaces are reused for variable set links.')
+    parser.add_argument('--credentials-set-name', type=str,
+                        help='Name of the TFC variable set holding the Scalr credentials used to migrate sensitive '
+                             'environment variables. Default: '
+                             f'{constants.TFC_MIGRATOR_DEFAULT_SECRETS_VARSET_NAME}')
 
     args = parser.parse_args()
 
@@ -48,6 +58,17 @@ def main():
     missing_args = [arg for arg in required_args if not getattr(args, arg)]
     if missing_args:
         ConsoleOutput.error(f"Missing required arguments: {', '.join(missing_args)}")
+        sys.exit(1)
+
+    if args.migrate_variable_sets_only and args.skip_variable_sets:
+        ConsoleOutput.error("--migrate-variable-sets-only cannot be used together with --skip-variable-sets")
+        sys.exit(1)
+
+    if args.migrate_variable_sets_only and args.skip_variables == "*":
+        ConsoleOutput.error(
+            "--migrate-variable-sets-only cannot be used together with --skip-variables=\"*\", "
+            "there would be nothing left to migrate"
+        )
         sys.exit(1)
 
     migrator_args = MigratorArgs.from_argparse(args)

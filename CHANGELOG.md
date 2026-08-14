@@ -2,7 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.4.4] - 2026-08-14
+
+### Added
+
+- `--management-workspace-name` flag to set the name of the management workspace that holds the generated Terraform code. Previously the name was always derived from the destination environment name (`--scalr-environment`, or the TFC project/organization name), which is still the default.
+- `--migrate-variable-sets-only` flag to migrate only TFC variable sets, skipping workspaces, state files and workspace variables. Intended for splitting a migration into a variable-sets run and a workspaces run; non-global sets are linked to the workspaces that already exist in the destination environment, and remaining links are created by the run that migrates those workspaces. The flag is rejected together with `--skip-variable-sets` or `--skip-variables="*"`.
+
+### Changed
+
+- Variable set scoping is now expressed in terms of the TFC workspaces "in scope for this run" instead of "migrated in this run", so `--migrate-variable-sets-only` scopes non-global sets by the `--workspaces` / `--tfc-project` filters. Scoping for regular runs is unchanged.
+
+### Fixed
+
+- `KeyError: 'download'` when migrating sensitive environment variables from a workspace whose latest TFC configuration version has no download link (not uploaded, or the archive is no longer available). Older configuration versions are now tried, and the migration of that variable/variable set is reported and skipped instead of crashing.
+- `TypeError` when downloading a configuration version of a workspace without a working directory (TFC returns `null` for workspaces running from the repository root). A working directory that is missing in the downloaded configuration is now reported instead of failing later in `terraform init`.
+- A failure while recovering sensitive variable set values no longer aborts the rest of that variable set's migration, so the non-sensitive variables and the workspace links are still created.
+- `--credentials-set-name` help text in `cli.py`, which incorrectly described the flag as skipping variable set migration.
 
 ### Removed
 
@@ -206,6 +222,7 @@ All notable changes to this project will be documented in this file.
 
 - No migration required from previous versions as this is the first release
 
+[0.4.4]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.4.4
 [0.4.3]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.4.3
 [0.4.2]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.4.2
 [0.4.0]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.4.0

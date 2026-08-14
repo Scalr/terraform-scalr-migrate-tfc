@@ -33,11 +33,16 @@ class MigratorArgs:
     opentofu_version: Optional[str] = None
     skip_post_migration: bool = False
     skip_variable_sets: bool = False
+    migrate_variable_sets_only: bool = False
 
     @classmethod
     def from_argparse(cls, args: argparse.Namespace) -> 'MigratorArgs':
         if not args.scalr_environment:
             args.scalr_environment = args.tfc_project if args.tfc_project else args.tfc_organization
+
+        # Defaults to the destination environment name, keeping the historical behavior
+        # when --management-workspace-name is not given.
+        management_workspace_name = args.management_workspace_name or args.scalr_environment
 
         return cls(
             scalr_hostname=args.scalr_hostname,
@@ -54,12 +59,13 @@ class MigratorArgs:
             skip_backend_secrets=args.skip_backend_secrets,
             lock=not args.skip_tfc_lock,
             management_env_name=args.management_env_name,
-            management_workspace_name=args.scalr_environment.replace(" ", '-'),
+            management_workspace_name=management_workspace_name.replace(" ", '-'),
             disable_deletion_protection=args.disable_deletion_protection,
             skip_variables=args.skip_variables,
             use_opentofu=args.use_opentofu,
             opentofu_version=args.opentofu_version,
             skip_post_migration=args.skip_post_migration,
             skip_variable_sets=args.skip_variable_sets,
+            migrate_variable_sets_only=args.migrate_variable_sets_only,
             credentials_set_name=args.credentials_set_name if args.credentials_set_name else constants.TFC_MIGRATOR_DEFAULT_SECRETS_VARSET_NAME,
         )

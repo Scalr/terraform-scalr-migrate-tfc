@@ -16,7 +16,7 @@ This script will migrate the following objects from TFC to Scalr in bulk:
 - Variable set migration
   - Variable set variables (including sensitive values recovery)
   - Non-global variable set workspace links and environment access updates
-  - Only TFC variable sets in scope for this run are migrated: **global** sets, sets linked to **`--tfc-project`** (when set), and sets linked to **workspaces migrated in this run** (workspace name patterns). TFC-global sets become Scalr **shared** (`is-shared`) variable sets with **no** explicit environment relationships; non-global sets get environment access merged by name across reruns.
+  - Only TFC variable sets in scope for this run are migrated: **global** sets, sets linked to **`--tfc-project`** (when set), and sets linked to **workspaces in scope for this run** (workspace name patterns). TFC-global sets become Scalr **shared** (`is-shared`) variable sets with **no** explicit environment relationships; non-global sets get environment access merged by name across reruns.
 - VCS provider configuration
 - Provider configuration linking
 - Remote state consumers
@@ -152,13 +152,33 @@ terraform login account.scalr.io
 - `--skip-tfc-lock`: Skip locking TFC/E workspaces after migration
 - `--skip-post-migration`: Skip post-migration Terraform/OpenTofu steps (fmt, init, apply)
 - `--skip-variable-sets`: Skip migration of TFC variable sets to Scalr (workspace-level variables are still migrated)
+- `--migrate-variable-sets-only`: Migrate **only** TFC variable sets. Workspaces, their state files and variables are not migrated; workspaces that already exist in the destination Scalr environment are reused to link non-global variable sets. Cannot be combined with `--skip-variable-sets` or `--skip-variables="*"`. See [Migrating variable sets separately](#migrating-variable-sets-separately).
 - `--management-env-name`: Name of the management environment (default: "scalr-admin")
+- `--management-workspace-name`: Name of the management workspace that holds the generated Terraform code (default: the `--scalr-environment` name; spaces are replaced with `-`)
 - `--disable-deletion-protection`: Disable deletion protection in workspace resources
 - `--tfc-project`: TFC project name to filter workspaces by
 - `--skip-variables`: Comma-separated list of variable key patterns to skip, or `"*"` to skip all variable migration (including variable sets)
 - `--use-opentofu`: Use OpenTofu for workspaces with Terraform version >= 1.6.0 instead of downgrading to 1.5.7
 - `--opentofu-version`: OpenTofu version to use when `--use-opentofu` is set (must be >= 1.6.0; default: latest active OpenTofu version in Scalr)
 - `--credentials-set-name`: Name of the TFC variable set the migrator creates for backend/credential secrets during sensitive environment variable migration (default: `Scalr-Creds`). This set is skipped when migrating variable sets to Scalr.
+
+## Migrating variable sets separately
+
+The migration is idempotent, so variable sets and workspaces can be migrated in separate runs:
+
+```bash
+# 1st run: variable sets only
+./migrate.sh --tfc-organization "my-org" --scalr-environment "my-env" --migrate-variable-sets-only
+
+# 2nd run: workspaces (variable sets already exist and are updated in place and linked)
+./migrate.sh --tfc-organization "my-org" --scalr-environment "my-env"
+```
+
+In `--migrate-variable-sets-only` mode:
+
+- TFC workspaces are still listed and filtered by `--workspaces` / `--tfc-project` to determine which variable sets are in scope, but no workspace, state file or workspace variable is migrated and no TFC workspace is locked.
+- Non-global variable sets are linked only to workspaces that already exist in the destination Scalr environment (from a previous run). Workspaces that do not exist yet are reported, and the links are created on the run that migrates them.
+- The management environment/workspace and the generated Terraform code are still created, unless `--skip-post-migration` is set.
 
 ## Generated Files
 

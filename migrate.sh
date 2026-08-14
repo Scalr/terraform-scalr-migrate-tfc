@@ -156,7 +156,9 @@ show_help() {
     echo "  --skip-tfc-lock                   Skip locking of the TFC/E workspaces after migration"
     echo "  --skip-post-migration             Skip post-migration Terraform steps (fmt, init, apply)"
     echo "  --skip-variable-sets              Skip migration of TFC variable sets to Scalr"
+    echo "  --migrate-variable-sets-only      Migrate only TFC variable sets, skip workspaces, states and variables"
     echo "  --management-env-name NAME        Name of the management environment (default: scalr-admin)"
+    echo "  --management-workspace-name NAME  Name of the management workspace (default: the Scalr environment name)"
     echo "  --disable-deletion-protection     Disable deletion protection in workspace resources"
     echo "  --skip-variables PATTERNS         Comma-separated list of variable keys to skip, or '*' to skip all variables"
     echo "  --agent-pool-name NAME            Scalr agent pool name"
@@ -195,7 +197,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         # Handle space-separated format
-        --scalr-hostname|--scalr-token|--scalr-environment|--tfc-hostname|--tfc-token|--tfc-organization|--tfc-project|--vcs-name|--pc-name|--workspaces|--management-env-name|--skip-variables|--agent-pool-name|--opentofu-version|--credentials-set-name)
+        --scalr-hostname|--scalr-token|--scalr-environment|--tfc-hostname|--tfc-token|--tfc-organization|--tfc-project|--vcs-name|--pc-name|--workspaces|--management-env-name|--management-workspace-name|--skip-variables|--agent-pool-name|--opentofu-version|--credentials-set-name)
             param="${1#--}"  # Remove leading --
             env_var=$(echo "$param" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
             case $1 in
@@ -221,7 +223,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         # Handle boolean flags
-        --skip-backend-secrets|--skip-tfc-lock|--skip-post-migration|--skip-variable-sets|--disable-deletion-protection|--use-opentofu)
+        --skip-backend-secrets|--skip-tfc-lock|--skip-post-migration|--skip-variable-sets|--migrate-variable-sets-only|--disable-deletion-protection|--use-opentofu)
             param="${1#--}"  # Remove leading --
             env_var=$(echo "$param" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
             export "$env_var"=true
@@ -287,6 +289,7 @@ CMD="$CMD --tfc-organization \"$TFC_ORGANIZATION\""
 [ "$SKIP_BACKEND_SECRETS" = true ] && CMD="$CMD --skip-backend-secrets"
 [ "$SKIP_TFC_LOCK" = true ] && CMD="$CMD --skip-tfc-lock"
 [ -n "$MANAGEMENT_ENV_NAME" ] && CMD="$CMD --management-env-name \"$MANAGEMENT_ENV_NAME\""
+[ -n "$MANAGEMENT_WORKSPACE_NAME" ] && CMD="$CMD --management-workspace-name \"$MANAGEMENT_WORKSPACE_NAME\""
 [ "$DISABLE_DELETION_PROTECTION" = true ] && CMD="$CMD --disable-deletion-protection"
 [ -n "$TFC_PROJECT" ] && CMD="$CMD --tfc-project \"$TFC_PROJECT\""
 [ -n "$SKIP_VARIABLES" ] && CMD="$CMD --skip-variables \"$SKIP_VARIABLES\""
@@ -296,6 +299,7 @@ CMD="$CMD --tfc-organization \"$TFC_ORGANIZATION\""
 [ "$USE_OPENTOFU" = true ] && CMD="$CMD --use-opentofu"
 [ "$SKIP_POST_MIGRATION" = true ] && CMD="$CMD --skip-post-migration"
 [ "$SKIP_VARIABLE_SETS" = true ] && CMD="$CMD --skip-variable-sets"
+[ "$MIGRATE_VARIABLE_SETS_ONLY" = true ] && CMD="$CMD --migrate-variable-sets-only"
 
 # Run the migrator
 echo "Running migrator..."
