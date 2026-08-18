@@ -35,3 +35,7 @@ override.tf.json
 venv
 generated-terraform/
 terraform-cloud/
+
+# discover.py --json/--csv report output
+tfc-discovery/report.json
+tfc-discovery/report.csv

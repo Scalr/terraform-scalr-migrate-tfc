@@ -11,6 +11,13 @@ from scalr_tfc_migrate import errors
 from scalr_tfc_migrate.args import MigratorArgs
 from scalr_tfc_migrate.console import ConsoleOutput
 
+# Default socket timeout (seconds) for every HTTP request made through
+# APIClient. Without this, urllib.request.urlopen has no timeout at all and
+# will hang indefinitely on a stalled connection (dead proxy, firewall
+# silently dropping packets, wrong hostname resolving to an unresponsive
+# host, etc.) with zero feedback to the user.
+DEFAULT_REQUEST_TIMEOUT = 30
+
 
 class APIClient:
     def __init__(self, hostname: str, token: str, api_version: str = "v2"):
@@ -37,14 +44,15 @@ class APIClient:
     def download_cv(self, cv_url: str):
         return self.make_request(f"https://{self.hostname}/{cv_url}", decode=False)
 
-    def make_request(self, url: str, method: str = "GET", data: Dict = None, headers: dict = None, decode: bool = True):
+    def make_request(self, url: str, method: str = "GET", data: Dict = None, headers: dict = None,
+                      decode: bool = True, timeout: int = DEFAULT_REQUEST_TIMEOUT):
         if data:
             data = json.dumps(data).encode('utf-8')
 
         req = urllib.request.Request(url, data=data, method=method, headers=headers if headers else self.headers)
 
         try:
-            with urllib.request.urlopen(req) as response:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
                 if response.code != 204:
                     r = response.read()
                     if not decode:
@@ -53,7 +61,13 @@ class APIClient:
                     return json.loads(r.decode('utf-8'))
                 return {}
         except urllib.error.HTTPError as e:
+            # Subclass of URLError - must be caught before the broader except below.
             self.raise_http_error(e)
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            raise errors.NetworkError(
+                f"Could not reach {self.hostname} within {timeout}s ({e}). "
+                "Check the hostname, network/VPN/proxy access, and try again."
+            )
 
     def get(self, route: str, filters: Optional[Dict] = None) -> Dict:
         url = f"https://{self.hostname}{self.api_version}{route}{self._encode_filters(filters)}"
@@ -116,6 +130,13 @@ class TFCClient(APIClient):
             filters["filter[project][id]"] = project_id
         return self.get(f"organizations/{org_name}/workspaces", filters)
 
+    def list_projects(self, org_name: str, page: int = 1) -> Dict:
+        filters = {
+            "page[size]": 100,
+            "page[number]": page,
+        }
+        return self.get(f"organizations/{org_name}/projects", filters)
+
     def get_project(self, org_name: str, project_name: str) -> Optional[Dict]:
         try:
             response = self.get(f"organizations/{org_name}/projects", {"filter[names]": project_name})
@@ -152,6 +173,12 @@ class TFCClient(APIClient):
             "page[number]": page,
         }
         return self.get(f"varsets/{varset_id}/relationships/vars", filters)
+
+    def get_latest_run(self, workspace_id: str) -> Optional[Dict]:
+        """Most recent run of any kind/status for a workspace, or None if it has never had one.
+        Used to gauge activity (e.g. staleness), not plan content - see get_latest_plan for that."""
+        runs = self.get(f"workspaces/{workspace_id}/runs", {"page[size]": 1})["data"]
+        return runs[0] if runs else None
 
     def get_latest_plan(self, tf_workspace: dict, page_size: int = 1) -> Optional[Dict]:
         filters = {"page[size]": page_size}
@@ -225,6 +252,25 @@ class TFCClient(APIClient):
         }
 
         self.post(f"organizations/{organization}/varsets", data)
+
+    def get_remote_state_consumers(self, workspace_id: str, page: int = 1) -> Dict:
+        """List workspaces allowed to read this workspace's state (this workspace is the producer)."""
+        filters = {"page[size]": 100, "page[number]": page}
+        return self.get(f"workspaces/{workspace_id}/relationships/remote-state-consumers", filters)
+
+    def get_run_triggers(self, workspace_id: str, trigger_type: str = "inbound", page: int = 1) -> Dict:
+        """List run triggers for a workspace.
+
+        trigger_type="inbound" (default) returns triggers where this workspace is
+        triggered by the completion of runs in other ("sourceable") workspaces.
+        trigger_type="outbound" returns triggers where this workspace triggers others.
+        """
+        filters = {
+            "filter[run-trigger][type]": trigger_type,
+            "page[size]": 100,
+            "page[number]": page,
+        }
+        return self.get(f"workspaces/{workspace_id}/run-triggers", filters)
 
     def get_current_cv(self, tf_workspace: dict) -> Optional[str]:
         # Request several versions: TFC exposes a `download` link only while the configuration
