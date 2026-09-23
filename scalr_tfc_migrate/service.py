@@ -4,22 +4,22 @@ import fnmatch
 import hashlib
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
 import traceback
 from datetime import datetime
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 from packaging import version
 
 from scalr_tfc_migrate.args import MigratorArgs
 from scalr_tfc_migrate.clients import ScalrClient, TFCClient
 from scalr_tfc_migrate.console import ConsoleOutput
-from scalr_tfc_migrate.constants import MAX_TERRAFORM_VERSION
+from scalr_tfc_migrate.constants import DEFAULT_PC_MAP_FILE, MAX_TERRAFORM_VERSION
 from scalr_tfc_migrate import errors
 from scalr_tfc_migrate.errors import InvalidInputError
+from scalr_tfc_migrate.matching import matches_workspace_patterns
 from scalr_tfc_migrate.hcl import (
     AbstractTerraformResource,
     HClAttribute,
@@ -42,8 +42,13 @@ class MigrationService:
         self.project_id: Optional[str] = None
         self.vcs_id: Optional[str] = None
         self.vcs_data: Optional[TerraformDataSource] = None
-        self.provider_config: Optional[Dict] = None
-        self.pc_data: Optional[TerraformDataSource] = None
+        self.provider_configs: Dict[str, Optional[Dict]] = {}
+        self.pc_data_sources: Dict[str, TerraformDataSource] = {}
+        self.pc_map: Dict[str, str] = {}
+        self.granted_pc_ids: Set[Tuple[str, str]] = set()
+        # TFC variables and variable sets whose values a provider configuration already holds.
+        self.consumed_variables: Dict[str, Dict] = {}
+        self.consumed_variable_sets: Dict[str, Dict] = {}
         self.workspaces_map = {}
         self.agent_pool_id: Optional[str] = None
         self.agent_pool_data: Optional[TerraformDataSource] = None
@@ -56,6 +61,7 @@ class MigrationService:
         self.workspace_vars_cache: Dict[str, List[Dict]] = {}  # tfc_workspace_id -> vars list
 
         self.load_account_id()
+        self.load_provider_configuration_map()
 
     def create_workspace_map(self, tfc_workspace_id, workspace: AbstractTerraformResource) -> None:
         self.workspaces_map[tfc_workspace_id] = workspace
@@ -134,17 +140,73 @@ class MigrationService:
 
         return self.vcs_data
 
-    def get_pc_data(self) -> Optional[TerraformDataSource]:
-        if self.args.pc_name and not self.pc_data:
-            self.pc_data = TerraformDataSource(
+    def get_pc_data(self, pc_name: Optional[str] = None) -> Optional[TerraformDataSource]:
+        pc_name = pc_name or self.args.pc_name
+        if not pc_name:
+            return None
+
+        if pc_name not in self.pc_data_sources:
+            data_source = TerraformDataSource(
                 "scalr_provider_configuration",
-                self.args.pc_name,
-                {"name": self.args.pc_name}
+                pc_name,
+                {"name": pc_name}
+            )
+            self.resource_manager.add_data_source(data_source)
+            self.pc_data_sources[pc_name] = data_source
+
+        return self.pc_data_sources[pc_name]
+
+    def load_provider_configuration_map(self) -> None:
+        """
+        The provider configuration script writes which provider configuration belongs to which
+        workspace; reading it here is what makes one run able to migrate workspaces that use
+        different cloud accounts, instead of one run per workspace with --pc-name.
+        """
+        path = self.args.pc_map_file
+        if not path:
+            if not os.path.exists(DEFAULT_PC_MAP_FILE):
+                return
+            path = DEFAULT_PC_MAP_FILE
+        elif not os.path.exists(path):
+            raise errors.InvalidInputError(f"Provider configuration map '{path}' does not exist")
+
+        try:
+            with open(path, 'r') as f:
+                document = json.load(f)
+        except json.JSONDecodeError as e:
+            raise errors.InvalidInputError(f"Provider configuration map '{path}' is not valid JSON: {e}")
+
+        for workspace_name, entry in (document.get("workspaces") or {}).items():
+            pc_name = entry.get("provider_configuration") if isinstance(entry, dict) else entry
+            if pc_name:
+                self.pc_map[workspace_name.lower()] = pc_name
+
+        consumed = document.get("consumed") or {}
+        self.consumed_variables = consumed.get("variables") or {}
+        self.consumed_variable_sets = consumed.get("variable_sets") or {}
+        if self.consumed_variables and self.args.skip_provider_credentials:
+            ConsoleOutput.info(
+                f"{len(self.consumed_variables)} variable(s) are provided by a provider configuration "
+                f"and will not be migrated"
             )
 
-            self.resource_manager.add_data_source(self.pc_data)
+        if self.pc_map:
+            ConsoleOutput.info(
+                f"Read provider configurations for {len(self.pc_map)} workspace(s) from '{path}'"
+            )
 
-        return self.pc_data
+    def is_provider_credential(self, tf_variable: Dict) -> Optional[str]:
+        """The provider configuration that already holds this variable's value, if any."""
+        if not self.args.skip_provider_credentials:
+            return None
+        entry = self.consumed_variables.get(tf_variable.get("id"))
+        return entry.get("provider_configuration") if entry else None
+
+    def resolve_pc_name(self, workspace_name: Optional[str]) -> Optional[str]:
+        """The map decides per workspace; --pc-name covers whatever the map does not."""
+        if workspace_name and self.pc_map.get(workspace_name.lower()):
+            return self.pc_map[workspace_name.lower()]
+        return self.args.pc_name
 
     def get_project_id(self) -> Optional[str]:
         if not self.args.tfc_project:
@@ -399,8 +461,9 @@ class MigrationService:
         branch = None
         trigger_patterns = None
         trigger_prefixes = None
-        configuration = self.get_provider_configuration()
-        pc_id = configuration["id"] if not is_management_workspace and configuration else None
+        pc_name = None if is_management_workspace else self.resolve_pc_name(attributes["name"])
+        configuration = self.get_provider_configuration(pc_name) if pc_name else None
+        pc_id = configuration["id"] if configuration else None
         vcs_repo = attributes.get("vcs-repo")
 
         if vcs_repo:
@@ -456,8 +519,10 @@ class MigrationService:
         ConsoleOutput.success(f"Created workspace '{attributes['name']}'")
 
         if pc_id:
+            # A provider configuration that is not shared has to allow this environment.
+            self.grant_environment_access(configuration, env_id)
             self.scalr.link_provider_config(response["data"]["id"], pc_id)
-            ConsoleOutput.info(f"Linked provider configuration: {self.args.pc_name}")
+            ConsoleOutput.info(f"Linked provider configuration: {pc_name}")
 
         # Create Terraform resource
         resource_attributes = {
@@ -489,7 +554,7 @@ class MigrationService:
                 resource_attributes["vcs_repo"]["trigger_patterns"] = trigger_patterns
 
         if pc_id:
-            resource_attributes["provider_configuration"] = HCLObject({"id": self.get_pc_data()})
+            resource_attributes["provider_configuration"] = HCLObject({"id": self.get_pc_data(pc_name)})
 
         if agent_pool_id and agent_pool_name_for_terraform:
             # Create or get cached data source for the agent pool
@@ -662,6 +727,13 @@ class MigrationService:
             # Skip variable if it matches any of the skip patterns
             if any(fnmatch.fnmatch(var_key, pattern.strip()) for pattern in skip_patterns):
                 ConsoleOutput.info(f"Skipping variable '{var_key}' as requested")
+                continue
+
+            pc_name = self.is_provider_credential(api_var)
+            if pc_name:
+                ConsoleOutput.info(
+                    f"Skipping variable '{var_key}': provider configuration '{pc_name}' already holds it"
+                )
                 continue
 
             if attributes["category"] == "env":
@@ -1229,6 +1301,16 @@ class MigrationService:
         # Non-global sets stay environment-scoped; environment IDs are still merged per run below.
         is_shared_scalr = is_global
 
+        var_set_variables = self.list_all_variable_set_vars_safe(var_set_id)
+        holders = [self.is_provider_credential(v) for v in var_set_variables]
+        if var_set_variables and all(holders):
+            # Nothing would be left in Scalr but an empty variable set.
+            ConsoleOutput.info(
+                f"Skipping variable set '{var_set_name}': provider configuration '{holders[0]}' "
+                f"already holds every variable it defines"
+            )
+            return
+
         existing_scalr_var_set = self.scalr.get_var_sets(name=var_set_name)["data"]
         existing_id = existing_scalr_var_set[0]["id"] if existing_scalr_var_set else None
         environment_ids = self._scalr_var_set_environment_ids_for_upsert(existing_id, env["id"], is_global)
@@ -1261,7 +1343,6 @@ class MigrationService:
         related_workspace_ids &= scope_tfc_workspace_ids
 
         candidate_workspaces = self.get_sorted_workspaces(related_workspace_ids)
-        var_set_variables = self.list_all_variable_set_vars_safe(var_set_id)
 
         skipped_sensitive_tf_vars: Dict[str, Dict] = {}
         skipped_sensitive_shell_vars: List[str] = []
@@ -1271,6 +1352,13 @@ class MigrationService:
 
             if any(fnmatch.fnmatch(var_key, pattern.strip()) for pattern in skip_patterns):
                 ConsoleOutput.info(f"Skipping variable-set variable '{var_key}' as requested")
+                continue
+
+            pc_name = self.is_provider_credential(tf_var)
+            if pc_name:
+                ConsoleOutput.info(
+                    f"Skipping variable-set variable '{var_key}': provider configuration '{pc_name}' already holds it"
+                )
                 continue
 
             category = self.normalize_variable_category(attributes["category"])
@@ -1342,27 +1430,7 @@ class MigrationService:
                 )
 
     def should_migrate_workspace(self, workspace_name: str) -> bool:
-        for pattern in self.args.workspaces.split(','):
-            # Clean the pattern by removing quotes and whitespace
-            cleaned_pattern = pattern.replace("'", '').replace('"', '').strip()
-
-            # Skip empty patterns
-            if not cleaned_pattern:
-                continue
-
-            if '*' in cleaned_pattern or '?' in cleaned_pattern:
-                # fnmatch.translate anchors the pattern (start-to-end), so
-                # "prod-*" matches "prod-network" but not "xprod-network-yy"
-                regex_pattern = fnmatch.translate(cleaned_pattern)
-                if re.match(regex_pattern, workspace_name, re.IGNORECASE):
-                    return True
-            else:
-                # True exact match, case-insensitive. Previously this branch
-                # used an unanchored re.search, which meant "network" would
-                # also match "core-network-prod" (substring, not exact).
-                if cleaned_pattern.lower() == workspace_name.lower():
-                    return True
-        return False
+        return matches_workspace_patterns(workspace_name, self.args.workspaces)
 
     def init_backend_secrets(self):
         if self.args.skip_backend_secrets:
@@ -1408,25 +1476,47 @@ class MigrationService:
 
         return self.vcs_id
 
-    def get_provider_configuration(self) -> Dict:
-        if self.args.pc_name and not self.provider_config:
-            pc_provider = self.scalr.get("provider-configurations", {"filter[name]": self.args.pc_name})["data"][0]
-            if not pc_provider:
-                raise errors.MissingDataError(f"Provider configuration with name '{self.args.pc_name}' not found.")
-            self.provider_config = pc_provider
+    def get_provider_configuration(self, pc_name: Optional[str] = None) -> Optional[Dict]:
+        pc_name = pc_name or self.args.pc_name
+        if not pc_name:
+            return None
 
-        return self.provider_config
+        if pc_name not in self.provider_configs:
+            # Previously indexed [0] before testing for emptiness, so a missing provider
+            # configuration raised IndexError instead of the intended error.
+            found = self.scalr.get("provider-configurations", {"filter[name]": pc_name})["data"]
+            match = next((pc for pc in found if pc["attributes"]["name"] == pc_name), None)
+            if not match:
+                if pc_name == self.args.pc_name:
+                    raise errors.MissingDataError(f"Provider configuration with name '{pc_name}' not found.")
+                # Resolved from the map, which may be older than the account: report and continue.
+                ConsoleOutput.warning(
+                    f"Provider configuration '{pc_name}' from the map does not exist in Scalr, "
+                    f"the workspace is migrated without it"
+                )
+            self.provider_configs[pc_name] = match
+
+        return self.provider_configs[pc_name]
 
     def update_provider_configuration(self, env_id: str) -> None:
-        provider_configuration = self.get_provider_configuration()
+        self.grant_environment_access(self.get_provider_configuration(), env_id)
+
+    def grant_environment_access(self, provider_configuration: Optional[Dict], env_id: str) -> None:
         if not provider_configuration:
             return
 
         if provider_configuration["attributes"]["is-shared"]:
             return
 
-        allowed_environments = provider_configuration["relationships"].get('environments')
-        data = allowed_environments.get('data', [])
+        if (provider_configuration["id"], env_id) in self.granted_pc_ids:
+            return
+        self.granted_pc_ids.add((provider_configuration["id"], env_id))
+
+        # A provider configuration created with no environment access has no environments
+        # relationship at all, or one that only carries links.
+        relationships = provider_configuration.get("relationships") or {}
+        allowed_environments = relationships.get('environments') or {}
+        data = allowed_environments.get('data') or []
 
         for allowed_environment in data:
             if allowed_environment['id'] == env_id:

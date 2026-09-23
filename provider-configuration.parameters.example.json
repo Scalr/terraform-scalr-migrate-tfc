@@ -1,0 +1,34 @@
+{
+  "defaults": {
+    "export_shell_variables": true
+  },
+  "provider_configurations": [
+    {
+      "subscription_id": "00000000-0000-0000-0000-000000000001",
+      "name": "azure-production",
+      "environments": ["production"]
+    },
+    {
+      "subscription_id": "00000000-0000-0000-0000-000000000002",
+      "name": "azure-staging",
+      "environments": ["staging"]
+    },
+    {
+      "project": "my-gcp-project",
+      "name": "gcp-production"
+    },
+    {
+      "account_id": "123456789012",
+      "name": "aws-production",
+      "workspaces": ["workspace-a", "workspace-b"],
+      "environments": ["environment-a","environment-b"],
+      "attributes": {
+        "aws-account-type": "regular"
+      }
+    },
+    {
+      "keys": ["AKIAEXAMPLEKEYONE", "AKIAEXAMPLEKEYTWO"],
+      "name": "aws-sandbox"
+    }
+  ]
+}

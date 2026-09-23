@@ -143,6 +143,18 @@ class TFCClient(APIClient):
         }
         return self.get(f"organizations/{org_name}/varsets", filters)
 
+    def get_workspace_variable_sets(self, workspace_id: str, page: int = 1) -> Dict:
+        """
+        Variable sets applied to a workspace. TFC resolves the scopes itself here: the response
+        also contains the global sets of the organization and the sets attached to the project
+        of the workspace, which the organization-wide listing only exposes through relationships.
+        """
+        filters = {
+            "page[size]": 100,
+            "page[number]": page,
+        }
+        return self.get(f"workspaces/{workspace_id}/varsets", filters)
+
     def get_variable_set(self, varset_id: str, filters: Optional[Dict] = None) -> Dict:
         return self.get(f"varsets/{varset_id}", filters)["data"]
 
@@ -433,6 +445,65 @@ class ScalrClient(APIClient):
         }
 
         return self.post(f"workspaces/{workspace_id}/provider-configuration-links", data)
+
+    def get_provider_configurations(self, name: Optional[str] = None, page: int = 1) -> Dict:
+        filters = {
+            "page[size]": 100,
+            "page[number]": page,
+        }
+        if name:
+            filters["filter[name]"] = name
+        return self.get("provider-configurations", filters)
+
+    def create_provider_configuration(
+            self,
+            account_id: str,
+            attributes: Dict,
+            environment_ids: Optional[List[str]] = None,
+    ) -> Dict:
+        relationships = {
+            "account": {
+                "data": {
+                    "type": "accounts",
+                    "id": account_id,
+                }
+            }
+        }
+
+        if environment_ids:
+            relationships["environments"] = {
+                "data": [{"type": "environments", "id": env_id} for env_id in environment_ids]
+            }
+
+        data = {
+            "data": {
+                "type": "provider-configurations",
+                "attributes": {k: v for k, v in attributes.items() if v is not None},
+                "relationships": relationships,
+            }
+        }
+
+        # Payloads are not logged even in debug mode: provider credentials are passed as attributes.
+        return self.post("provider-configurations", data)
+
+    def update_provider_configuration(self, pc_id: str, attributes: Dict) -> Dict:
+        data = {
+            "data": {
+                "type": "provider-configurations",
+                "id": pc_id,
+                "attributes": {k: v for k, v in attributes.items() if v is not None},
+            }
+        }
+        return self.patch(f"provider-configurations/{pc_id}", data)
+
+    def create_provider_configuration_parameter(self, pc_id: str, attributes: Dict) -> Dict:
+        data = {
+            "data": {
+                "type": "provider-configuration-parameters",
+                "attributes": {k: v for k, v in attributes.items() if v is not None},
+            }
+        }
+        return self.post(f"provider-configurations/{pc_id}/parameters", data)
 
     def create_state_version(self, workspace_id: str, attributes: Dict) -> Dict:
         data = {

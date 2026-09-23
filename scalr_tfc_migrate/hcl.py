@@ -30,9 +30,13 @@ class HCLObject:
 
 
 class AbstractTerraformResource:
-    def __init__(self, resource_type: str, name: str, attributes: Dict, hcl_resource_type: str) -> None:
+    def __init__(self, resource_type: str, name: str, attributes: Dict, hcl_resource_type: str,
+                 transform: bool = True) -> None:
         self.resource_type = resource_type
-        self.name = transform_name(name)
+        # Names read back from a generated main.tf are already transformed; transforming them
+        # again would turn "r_workspace_a" into "r_r_workspace_a", and the resource would no
+        # longer be recognized as the one already in the file.
+        self.name = transform_name(name) if transform else name
         self.attributes = attributes
         self.id = None
         self.hcl_resource_type: str = hcl_resource_type
@@ -112,49 +116,96 @@ class AbstractTerraformResource:
 
 
 class TerraformResource(AbstractTerraformResource):
-    def __init__(self, resource_type: str, name: str, attributes: Dict) -> None:
-        super().__init__(resource_type, name, attributes, "resource")
+    def __init__(self, resource_type: str, name: str, attributes: Dict, transform: bool = True) -> None:
+        super().__init__(resource_type, name, attributes, "resource", transform)
 
 
 class TerraformDataSource(AbstractTerraformResource):
-    def __init__(self, resource_type: str, name: str, attributes: Dict) -> None:
-        super().__init__(resource_type, name, attributes, "data")
+    def __init__(self, resource_type: str, name: str, attributes: Dict, transform: bool = True) -> None:
+        super().__init__(resource_type, name, attributes, "data", transform)
+
+
+def _parse_value(raw: str) -> Any:
+    value = raw.strip()
+    if value.startswith('"') and value.endswith('"') and len(value) > 1:
+        return value[1:-1]
+    if value.lower() in ('true', 'false'):
+        return value.lower() == 'true'
+    if value.startswith('[') and value.endswith(']'):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return value
+    return value
 
 
 def extract_resources(attrs_block: str) -> Dict:
-    attrs = {}
+    """
+    Read the attributes of a generated block back. Nested blocks stay nested and lists stay
+    lists: flattening a `vcs_repo` block into its parent, or turning `["a"]` into the string
+    `["a"]`, produces a block that is no longer valid HCL when it is rendered again.
+    """
+    attrs: Dict = {}
+    stack: List[Dict] = [attrs]
+    heredoc_key: Optional[str] = None
+    heredoc_lines: List[str] = []
+    list_key: Optional[str] = None
+    list_items: List[Any] = []
 
-    # Parse attributes from the block
-    for line in attrs_block.split('\n'):
-        line = line.strip()
-        if '=' in line:
-            key, value = line.split('=', 1)
-            key = key.strip()
-            value = value.strip()
-            # Handle string values
-            if value.startswith('"') and value.endswith('"'):
-                value = value[1:-1]
-            # Handle boolean values
-            elif value.lower() in ('true', 'false'):
-                value = value.lower() == 'true'
-            # Handle vcs_repo block
-            elif key.strip() == 'vcs_repo':
-                vcs_attrs = {}
-                vcs_block = re.search(r'vcs_repo\s*{([^}]+)}', attrs_block, re.DOTALL)
-                if vcs_block:
-                    for vcs_line in vcs_block.group(1).split('\n'):
-                        vcs_line = vcs_line.strip()
-                        if '=' in vcs_line:
-                            vcs_key, vcs_value = vcs_line.split('=', 1)
-                            vcs_key = vcs_key.strip()
-                            vcs_value = vcs_value.strip()
-                            if vcs_value.startswith('"') and vcs_value.endswith('"'):
-                                vcs_value = vcs_value[1:-1]
-                            elif vcs_value.lower() in ('true', 'false'):
-                                vcs_value = vcs_value.lower() == 'true'
-                            vcs_attrs[vcs_key] = vcs_value
-                attrs[key] = vcs_attrs
-                continue
-            attrs[key] = value
+    for raw_line in attrs_block.split('\n'):
+        line = raw_line.strip()
+
+        # A list is rendered over several lines, so it is collected until its closing bracket.
+        if list_key is not None:
+            if line.startswith(']'):
+                stack[-1][list_key] = list_items
+                list_key, list_items = None, []
+            elif line:
+                list_items.append(_parse_value(line.rstrip(',')))
+            continue
+
+        if heredoc_key is not None:
+            if line == 'EOT':
+                stack[-1][heredoc_key] = '\n'.join(heredoc_lines)
+                heredoc_key, heredoc_lines = None, []
+            else:
+                heredoc_lines.append(raw_line)
+            continue
+
+        if not line or line.startswith('#'):
+            continue
+
+        if line == '}' or line == '},':
+            if len(stack) > 1:
+                stack.pop()
+            continue
+
+        if '=' not in line:
+            # `vcs_repo {` and other block openings
+            if line.endswith('{'):
+                key = line[:-1].strip()
+                block: Dict = {}
+                stack[-1][key] = block
+                stack.append(block)
+            continue
+
+        key, value = line.split('=', 1)
+        key, value = key.strip(), value.strip()
+
+        if value == '{':
+            block = {}
+            stack[-1][key] = block
+            stack.append(block)
+            continue
+
+        if value.startswith('<<'):
+            heredoc_key = key
+            continue
+
+        if value == '[':
+            list_key = key
+            continue
+
+        stack[-1][key] = _parse_value(value)
+
     return attrs
-

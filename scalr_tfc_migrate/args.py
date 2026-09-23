@@ -22,6 +22,8 @@ class MigratorArgs:
     management_workspace_name: str
     credentials_set_name: str
     agent_pool_name: Optional[str] = None
+    pc_map_file: Optional[str] = None
+    skip_provider_credentials: bool = False
     account_id: Optional[str] = None
     lock: bool = True
     tfc_project: Optional[str] = None
@@ -54,6 +56,8 @@ class MigratorArgs:
             tfc_project=args.tfc_project,
             vcs_name=args.vcs_name,
             pc_name=args.pc_name,
+            pc_map_file=args.pc_map,
+            skip_provider_credentials=args.skip_provider_credentials,
             agent_pool_name=args.agent_pool_name,
             workspaces=args.workspaces or "*",
             skip_backend_secrets=args.skip_backend_secrets,

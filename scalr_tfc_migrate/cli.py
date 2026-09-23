@@ -21,7 +21,16 @@ def main():
     parser.add_argument('--tfc-token', type=str, help='TFC/E token')
     parser.add_argument('--tfc-organization', type=str, help='TFC/E organization name')
     parser.add_argument('-v', '--vcs-name', type=str, help='VCS identifier')
-    parser.add_argument('--pc-name', type=str, help='Provider configuration name')
+    parser.add_argument('--pc-name', type=str,
+                        help='Provider configuration name, used for every workspace this run creates that the '
+                             'provider configuration map does not cover')
+    parser.add_argument('--pc-map', type=str,
+                        help='Workspace → provider configuration map written by create_provider_configurations.py. '
+                             f'Default: {constants.DEFAULT_PC_MAP_FILE} when it exists')
+    parser.add_argument('--skip-provider-credentials', action='store_true',
+                        help='Do not migrate the TFC variables whose values a provider configuration already '
+                             'holds, according to the provider configuration map. A variable set left with '
+                             'nothing else is not created')
     parser.add_argument('--agent-pool-name', type=str, help='Scalr agent pool name')
     parser.add_argument('-w', '--workspaces', type=str, help='Workspaces to migrate. By default - all')
     parser.add_argument('--skip-backend-secrets', action='store_true',

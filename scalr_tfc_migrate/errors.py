@@ -38,13 +38,22 @@ class APIError(MigrationException):
 
         errors = body.get("errors") if isinstance(body, dict) else None
         if isinstance(errors, list) and errors:
-            err0 = errors[0]
-            if isinstance(err0, dict):
-                return str(err0.get("detail") or err0.get("title") or err0.get("status") or text[:280])
-            return str(err0)
+            return "; ".join(APIError._format_error(e) for e in errors[:3]) or text[:280]
         if isinstance(body, dict) and isinstance(body.get("message"), str):
             return body["message"]
         return text[:500]
+
+    @staticmethod
+    def _format_error(error: Any) -> str:
+        """A JSON:API error is useless without the field it points at ("Field required.")."""
+        if not isinstance(error, dict):
+            return str(error)
+        detail = str(error.get("detail") or error.get("title") or error.get("status") or "").strip()
+        source = error.get("source") or {}
+        field = source.get("pointer") or source.get("parameter") if isinstance(source, dict) else None
+        if field:
+            return f"{detail} [{field}]" if detail else f"[{field}]"
+        return detail
 
     def __str__(self) -> str:
         return str(self.api_error)

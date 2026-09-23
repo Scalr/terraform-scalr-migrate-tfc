@@ -151,10 +151,13 @@ show_help() {
     echo "  --scalr-environment ENV           Scalr environment to create (default: TFC/E organization name)"
     echo "  --vcs-name NAME                   VCS identifier. Required for creation VCS-driven workspaces."
     echo "  --pc-name NAME                    Provider configuration name to link to workspaces"
+    echo "  --pc-map FILE                     Workspace → provider configuration map from create-provider-configurations.sh"
+    echo "  --skip-provider-credentials       Do not migrate variables a provider configuration already holds"
     echo "  --workspaces PATTERN              Workspaces to migrate (default: all)"
     echo "  --skip-backend-secrets            Skip creating shell variables in Scalr"
     echo "  --skip-tfc-lock                   Skip locking of the TFC/E workspaces after migration"
     echo "  --skip-post-migration             Skip post-migration Terraform steps (fmt, init, apply)"
+    echo "  --apply-auto-approve              Run the post-migration apply with -auto-approve (no interactive prompt)"
     echo "  --skip-variable-sets              Skip migration of TFC variable sets to Scalr"
     echo "  --migrate-variable-sets-only      Migrate only TFC variable sets, skip workspaces, states and variables"
     echo "  --management-env-name NAME        Name of the management environment (default: scalr-admin)"
@@ -189,6 +192,7 @@ while [[ $# -gt 0 ]]; do
                 -v=*|--vcs-name=*) env_var="SCALR_VCS_NAME" ;;
                 -w=*|--workspaces=*) env_var="WORKSPACES" ;;
                 --pc-name=*) env_var="SCALR_PC_NAME" ;;
+                --pc-map=*) env_var="SCALR_PC_MAP" ;;
                 --agent-pool-name=*) env_var="SCALR_AGENT_POOL_NAME" ;;
                 --opentofu-version=*) env_var="SCALR_OPENTOFU_VERSION" ;;
                 --credentials-set-name=*) env_var="SCALR_CREDENTIALS_SET_NAME" ;;
@@ -197,13 +201,14 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         # Handle space-separated format
-        --scalr-hostname|--scalr-token|--scalr-environment|--tfc-hostname|--tfc-token|--tfc-organization|--tfc-project|--vcs-name|--pc-name|--workspaces|--management-env-name|--management-workspace-name|--skip-variables|--agent-pool-name|--opentofu-version|--credentials-set-name)
+        --scalr-hostname|--scalr-token|--scalr-environment|--tfc-hostname|--tfc-token|--tfc-organization|--tfc-project|--vcs-name|--pc-name|--pc-map|--workspaces|--management-env-name|--management-workspace-name|--skip-variables|--agent-pool-name|--opentofu-version|--credentials-set-name)
             param="${1#--}"  # Remove leading --
             env_var=$(echo "$param" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
             case $1 in
                 -v|--vcs-name) env_var="SCALR_VCS_NAME" ;;
                 -w|--workspaces) env_var="WORKSPACES" ;;
                 --pc-name) env_var="SCALR_PC_NAME" ;;
+                --pc-map) env_var="SCALR_PC_MAP" ;;
                 --agent-pool-name) env_var="SCALR_AGENT_POOL_NAME" ;;
                 --opentofu-version) env_var="SCALR_OPENTOFU_VERSION" ;;
                 --credentials-set-name) env_var="SCALR_CREDENTIALS_SET_NAME" ;;
@@ -223,7 +228,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         # Handle boolean flags
-        --skip-backend-secrets|--skip-tfc-lock|--skip-post-migration|--skip-variable-sets|--migrate-variable-sets-only|--disable-deletion-protection|--use-opentofu)
+        --skip-backend-secrets|--skip-tfc-lock|--skip-post-migration|--skip-variable-sets|--migrate-variable-sets-only|--disable-deletion-protection|--use-opentofu|--apply-auto-approve|--skip-provider-credentials)
             param="${1#--}"  # Remove leading --
             env_var=$(echo "$param" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
             export "$env_var"=true
@@ -285,6 +290,7 @@ CMD="$CMD --tfc-token \"$TFC_TOKEN\""
 CMD="$CMD --tfc-organization \"$TFC_ORGANIZATION\""
 [ -n "$SCALR_VCS_NAME" ] && CMD="$CMD --vcs-name \"$SCALR_VCS_NAME\""
 [ -n "$SCALR_PC_NAME" ] && CMD="$CMD --pc-name \"$SCALR_PC_NAME\""
+[ -n "$SCALR_PC_MAP" ] && CMD="$CMD --pc-map \"$SCALR_PC_MAP\""
 [ -n "$WORKSPACES" ] && CMD="$CMD -w \"$WORKSPACES\""
 [ "$SKIP_BACKEND_SECRETS" = true ] && CMD="$CMD --skip-backend-secrets"
 [ "$SKIP_TFC_LOCK" = true ] && CMD="$CMD --skip-tfc-lock"
@@ -300,6 +306,7 @@ CMD="$CMD --tfc-organization \"$TFC_ORGANIZATION\""
 [ "$SKIP_POST_MIGRATION" = true ] && CMD="$CMD --skip-post-migration"
 [ "$SKIP_VARIABLE_SETS" = true ] && CMD="$CMD --skip-variable-sets"
 [ "$MIGRATE_VARIABLE_SETS_ONLY" = true ] && CMD="$CMD --migrate-variable-sets-only"
+[ "$SKIP_PROVIDER_CREDENTIALS" = true ] && CMD="$CMD --skip-provider-credentials"
 
 # Run the migrator
 echo "Running migrator..."
@@ -323,9 +330,14 @@ if [ $? -eq 0 ]; then
         TF_CMD="terraform"
         [ "$USE_OPENTOFU" = "true" ] && TF_CMD="tofu"
 
+        APPLY_ARGS=()
+        if [ "$APPLY_AUTO_APPROVE" = true ]; then
+            APPLY_ARGS+=("-auto-approve" "-input=false")
+        fi
+
         $TF_CMD fmt -list=false
         $TF_CMD init
-        $TF_CMD apply
+        $TF_CMD apply "${APPLY_ARGS[@]}"
 
         echo "Post-migration steps completed successfully!"
     else

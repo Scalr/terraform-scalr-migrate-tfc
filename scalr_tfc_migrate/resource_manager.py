@@ -22,35 +22,53 @@ class ResourceManager:
         self._load_existing_data_sources()
         self._load_existing_resources()
 
-    def _load_existing_resources(self):
-        """Load existing resources from main.tf if it exists."""
+    def _read_main_tf(self) -> Optional[str]:
         main_tf_path = os.path.join(self.output_dir, "main.tf")
         if not os.path.exists(main_tf_path):
+            return None
+        with open(main_tf_path, "r") as f:
+            return f.read()
+
+    @staticmethod
+    def _iter_blocks(content: str, kind: str):
+        """
+        Yield (type, name, body) for every `kind "type" "name" { ... }` block, matching braces
+        so that a nested block such as `vcs_repo { ... }` does not end the resource early.
+        """
+        header = re.compile(rf'{kind}\s+"([^"]+)"\s+"([^"]+)"\s*{{')
+        for match in header.finditer(content):
+            depth = 1
+            index = match.end()
+            while index < len(content) and depth:
+                if content[index] == '{':
+                    depth += 1
+                elif content[index] == '}':
+                    depth -= 1
+                index += 1
+            yield match.group(1), match.group(2), content[match.end():index - 1]
+
+    def _load_existing_resources(self):
+        """Load existing resources from main.tf if it exists."""
+        content = self._read_main_tf()
+        if content is None:
             return
 
-        regexp = r'resource\s+"([^"]+)"\s+"([^"]+)"\s*{([^}]+)}'
-
-        with open(main_tf_path, "r") as f:
-            for match in re.finditer(regexp, f.read(), re.DOTALL):
-                resource_type, name, attrs_block = match.groups()
-                self.resources.append(
-                    TerraformResource(resource_type, name, extract_resources(attrs_block))
-                )
+        for resource_type, name, attrs_block in self._iter_blocks(content, "resource"):
+            # The name comes from the file, where it is already in its transformed form.
+            self.resources.append(
+                TerraformResource(resource_type, name, extract_resources(attrs_block), transform=False)
+            )
 
     def _load_existing_data_sources(self):
         """Load existing resources from main.tf if it exists."""
-        main_tf_path = os.path.join(self.output_dir, "main.tf")
-        if not os.path.exists(main_tf_path):
+        content = self._read_main_tf()
+        if content is None:
             return
 
-        regexp = r'data\s+"([^"]+)"\s+"([^"]+)"\s*{([^}]+)}'
-
-        with open(main_tf_path, "r") as f:
-            for match in re.finditer(regexp, f.read(), re.DOTALL):
-                resource_type, name, attrs_block = match.groups()
-                self.data_sources.append(
-                    TerraformDataSource(resource_type, name, extract_resources(attrs_block))
-                )
+        for resource_type, name, attrs_block in self._iter_blocks(content, "data"):
+            self.data_sources.append(
+                TerraformDataSource(resource_type, name, extract_resources(attrs_block), transform=False)
+            )
 
     def add_resource(self, resource: TerraformResource):
         """Add a resource if it doesn't already exist."""
