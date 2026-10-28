@@ -2,6 +2,63 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+Engine changes that let a script, a CI pipeline or an AI agent drive a migration in waves: every input is a file,
+every outcome is machine-readable, and every run can be previewed and checked.
+
+### Added
+
+- `--workspaces-file FILE`: the exact names of the workspaces to migrate, one per line (`#` comments allowed), so a
+  migration wave is a reviewable file rather than a glob. Combined with `-w`, a workspace must match both; names that
+  TFC/E does not list are reported.
+- A JSON report of every run, in `generated-terraform/<environment>/reports/` or `--report-file`: per workspace its
+  status (`migrated`, `existing`, `skipped`, `failed` and the error), Scalr id, state serials, every variable key with
+  what happened to it (`created`, `exists`, `skipped` and why, sensitive values `recovered`, `scheduled` or
+  `unrecovered`), provider configuration, agent pool, remote state consumers, access policies, run triggers and TFC/E
+  lock; per variable set what was created, updated, linked or left unrecovered. Values of variables and tokens are
+  never written.
+- `generated-terraform/workspace-map.json`: TFC/E workspace → Scalr workspace (hostname, environment id, workspace id),
+  merged across runs and environments. Runs use it to resolve workspaces migrated by earlier waves, and it is the input
+  for repointing `terraform_remote_state` / `tfe_outputs` readers at Scalr.
+- `--inventory`: exports the workspaces in scope to `migration-inventory/` (`--inventory-dir`) — `workspaces.csv`,
+  `team-access.csv` (workspace and project grants with custom permissions), `state-consumers.csv`, `run-triggers.csv`,
+  `inventory.json`, and a `team-map.example.json` listing every team and access level found. Needs TFC/E credentials
+  only; variable values are not exported.
+- `--dry-run`: reports what a migration with the same arguments would create, reuse, recover, skip or leave pending,
+  and lists blockers (missing VCS provider, provider configuration or agent pool, VCS-driven workspace without
+  `--vcs-name`, missing project). Nothing is written to TFC/E or Scalr; exits 1 when there are blockers.
+- `--team-map FILE`: TFC/E team access is migrated to Scalr access policies. The JSON file maps TFC/E teams to existing
+  Scalr teams and access levels to Scalr role names, with per-workspace `overrides`; `project_access` turns project
+  grants into environment policies (`environment`, with `--tfc-project`) or workspace policies (`workspaces`). Unmapped
+  teams or levels, and teams or roles missing in Scalr, are reported and get no policy. A team that already has a
+  policy on the workspace is left alone. Created policies are written to the generated code as `scalr_access_policy`.
+- Run triggers are migrated (`scalr_run_trigger`), in both directions: a trigger whose other end is not in Scalr yet is
+  reported as pending and created by the run that migrates it. `--skip-run-triggers` disables it.
+- `--layout per-workspace`: the generated code puts each workspace with its variables, access policies and run triggers
+  in its own `ws_<name>.tf`, and the shared blocks in `main.tf`. Re-runs read every `.tf` file of the directory, in
+  either layout.
+- `--verify`: compares the workspaces of the workspace map in scope with TFC/E — Scalr workspace exists, Scalr state
+  serial not behind TFC/E, TFC/E workspace locked, variable keys, remote state consumers and (with `--team-map`) access
+  policies present — and writes a report; exits 1 on any mismatch. `--verify-plan` also queues a plan-only run in every
+  VCS-driven workspace and reports whether it proposes changes.
+
+### Changed
+
+- The migrator exits with code 2 when some workspaces failed and the rest were migrated (it exited 0 before).
+  `migrate.sh` still runs the post-migration steps in that case, so what was created gets imported, then exits 2.
+- Remote state consumers are resolved through the workspace map as well, so a consumer migrated in a later wave is
+  allowed to read the state of a workspace migrated in an earlier one.
+
+### Fixed
+
+- `migrate.sh` reported success for a failed migration (the exit code was read after `deactivate`), and with `set -e`
+  stopped before its own error message.
+- A failure in post-migrating remote state consumers no longer aborts the run when the producer workspace is not in
+  the generated code.
+- Recovering sensitive Terraform variables from a plan file no longer fails when the code declares a sensitive variable
+  whose value does not come from the workspace itself (e.g. from a variable set or a default).
+
 ## [0.5.0] - 2026-09-23
 
 ### Added

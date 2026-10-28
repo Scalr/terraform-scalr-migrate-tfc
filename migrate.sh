@@ -107,13 +107,16 @@ read_tfrc_credentials() {
 # Function to validate required parameters
 validate_required_params() {
     local missing_params=()
-    
-    if [ -z "$SCALR_HOSTNAME" ]; then
-        missing_params+=("SCALR_HOSTNAME")
-    fi
-    
-    if [ -z "$SCALR_TOKEN" ]; then
-        missing_params+=("SCALR_TOKEN")
+
+    # --inventory only reads TFC/E
+    if [ "$INVENTORY" != true ]; then
+        if [ -z "$SCALR_HOSTNAME" ]; then
+            missing_params+=("SCALR_HOSTNAME")
+        fi
+
+        if [ -z "$SCALR_TOKEN" ]; then
+            missing_params+=("SCALR_TOKEN")
+        fi
     fi
     
     if [ -z "$TFC_TOKEN" ]; then
@@ -154,6 +157,7 @@ show_help() {
     echo "  --pc-map FILE                     Workspace → provider configuration map from create-provider-configurations.sh"
     echo "  --skip-provider-credentials       Do not migrate variables a provider configuration already holds"
     echo "  --workspaces PATTERN              Workspaces to migrate (default: all)"
+    echo "  --workspaces-file FILE            File with the exact names of the workspaces to migrate, one per line"
     echo "  --skip-backend-secrets            Skip creating shell variables in Scalr"
     echo "  --skip-tfc-lock                   Skip locking of the TFC/E workspaces after migration"
     echo "  --skip-post-migration             Skip post-migration Terraform steps (fmt, init, apply)"
@@ -168,6 +172,18 @@ show_help() {
     echo "  --use-opentofu                    Use OpenTofu for workspaces with Terraform version >= 1.6.0 instead of downgrading"
     echo "  --opentofu-version VERSION        If Opentofu is used, a version to migrate workspaces with Terraform => 1.6.0. Default: latest Opentofu version"
     echo "  --credentials-set-name NAME       The name of a variable set containing the Scalr credentials to perform migration of the sensitive environment variables. Default: Scalr-Creds"
+    echo "  --team-map FILE                   JSON mapping of TFC/E teams and access levels to Scalr teams and roles"
+    echo "  --skip-run-triggers               Skip migration of TFC/E run triggers"
+    echo "  --layout single|per-workspace     Generated code in main.tf (default) or one ws_<name>.tf file per workspace"
+    echo "  --report-file FILE                Where to write the JSON report of the run"
+    echo ""
+    echo "Read-only modes (no post-migration steps):"
+    echo "  --inventory                       Export TFC/E workspaces, team access, state consumers and run triggers to CSV/JSON"
+    echo "  --inventory-dir DIR               Directory for the --inventory files (default: migration-inventory)"
+    echo "  --dry-run                         Report what a migration would create, reuse or skip, without changing anything"
+    echo "  --verify                          Check migrated workspaces against TFC/E"
+    echo "  --verify-plan                     With --verify, also queue a plan-only run per workspace (creates runs)"
+    echo ""
     echo "  --help                            Show this help message"
     echo ""
     echo "Example:"
@@ -201,7 +217,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         # Handle space-separated format
-        --scalr-hostname|--scalr-token|--scalr-environment|--tfc-hostname|--tfc-token|--tfc-organization|--tfc-project|--vcs-name|--pc-name|--pc-map|--workspaces|--management-env-name|--management-workspace-name|--skip-variables|--agent-pool-name|--opentofu-version|--credentials-set-name)
+        --scalr-hostname|--scalr-token|--scalr-environment|--tfc-hostname|--tfc-token|--tfc-organization|--tfc-project|--vcs-name|--pc-name|--pc-map|--workspaces|--management-env-name|--management-workspace-name|--skip-variables|--agent-pool-name|--opentofu-version|--credentials-set-name|--workspaces-file|--report-file|--inventory-dir|--team-map|--layout)
             param="${1#--}"  # Remove leading --
             env_var=$(echo "$param" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
             case $1 in
@@ -228,7 +244,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         # Handle boolean flags
-        --skip-backend-secrets|--skip-tfc-lock|--skip-post-migration|--skip-variable-sets|--migrate-variable-sets-only|--disable-deletion-protection|--use-opentofu|--apply-auto-approve|--skip-provider-credentials)
+        --skip-backend-secrets|--skip-tfc-lock|--skip-post-migration|--skip-variable-sets|--migrate-variable-sets-only|--disable-deletion-protection|--use-opentofu|--apply-auto-approve|--skip-provider-credentials|--skip-run-triggers|--inventory|--dry-run|--verify|--verify-plan)
             param="${1#--}"  # Remove leading --
             env_var=$(echo "$param" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
             export "$env_var"=true
@@ -307,18 +323,39 @@ CMD="$CMD --tfc-organization \"$TFC_ORGANIZATION\""
 [ "$SKIP_VARIABLE_SETS" = true ] && CMD="$CMD --skip-variable-sets"
 [ "$MIGRATE_VARIABLE_SETS_ONLY" = true ] && CMD="$CMD --migrate-variable-sets-only"
 [ "$SKIP_PROVIDER_CREDENTIALS" = true ] && CMD="$CMD --skip-provider-credentials"
+[ -n "$WORKSPACES_FILE" ] && CMD="$CMD --workspaces-file \"$WORKSPACES_FILE\""
+[ -n "$REPORT_FILE" ] && CMD="$CMD --report-file \"$REPORT_FILE\""
+[ -n "$INVENTORY_DIR" ] && CMD="$CMD --inventory-dir \"$INVENTORY_DIR\""
+[ -n "$TEAM_MAP" ] && CMD="$CMD --team-map \"$TEAM_MAP\""
+[ -n "$LAYOUT" ] && CMD="$CMD --layout \"$LAYOUT\""
+[ "$SKIP_RUN_TRIGGERS" = true ] && CMD="$CMD --skip-run-triggers"
+[ "$INVENTORY" = true ] && CMD="$CMD --inventory"
+[ "$DRY_RUN" = true ] && CMD="$CMD --dry-run"
+[ "$VERIFY" = true ] && CMD="$CMD --verify"
+[ "$VERIFY_PLAN" = true ] && CMD="$CMD --verify-plan"
 
-# Run the migrator
+# Run the migrator. Exit code 2 means some workspaces failed while the others were migrated:
+# the post-migration steps still import what was created, and the script exits with 2 at the end.
 echo "Running migrator..."
-eval "$CMD"
+MIGRATOR_EXIT_CODE=0
+eval "$CMD" || MIGRATOR_EXIT_CODE=$?
 
 # Deactivate virtual environment
 deactivate
 
+# The read-only modes have nothing to apply
+if [ "$INVENTORY" = true ] || [ "$DRY_RUN" = true ] || [ "$VERIFY" = true ] || [ "$VERIFY_PLAN" = true ]; then
+    exit $MIGRATOR_EXIT_CODE
+fi
+
 # Check if migration was successful
-if [ $? -eq 0 ]; then
-    echo "Migration completed successfully!"
-    
+if [ $MIGRATOR_EXIT_CODE -eq 0 ] || [ $MIGRATOR_EXIT_CODE -eq 2 ]; then
+    if [ $MIGRATOR_EXIT_CODE -eq 0 ]; then
+        echo "Migration completed successfully!"
+    else
+        echo "Migration completed, but some workspaces failed. See the run report in ./generated-terraform/$SCALR_ENVIRONMENT/reports."
+    fi
+
     # Run post-migration steps if not skipped
     if [ "$SKIP_POST_MIGRATION" != "true" ]; then
         echo "Starting post-migration steps..."
@@ -347,3 +384,6 @@ else
     echo "Migration failed. Please check the errors above."
     exit 1
 fi 
+
+# 0, or 2 when some workspaces failed to migrate
+exit $MIGRATOR_EXIT_CODE

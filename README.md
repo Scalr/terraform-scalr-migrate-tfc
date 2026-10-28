@@ -10,6 +10,8 @@ This script will migrate the following objects from TFC to Scalr in bulk:
   - Remote state sharing
   - Variable values (including sensitive variables when available)
   - Workspace dependencies
+  - Run triggers
+  - Team access, as Scalr access policies (with `--team-map`)
 - State file migration
   - Preserves state history
 - Variable migration (including sensitive variables from plan files)
@@ -166,6 +168,102 @@ terraform login account.scalr.io
 - `--use-opentofu`: Use OpenTofu for workspaces with Terraform version >= 1.6.0 instead of downgrading to 1.5.7
 - `--opentofu-version`: OpenTofu version to use when `--use-opentofu` is set (must be >= 1.6.0; default: latest active OpenTofu version in Scalr)
 - `--credentials-set-name`: Name of the TFC variable set the migrator creates for backend/credential secrets during sensitive environment variable migration (default: `Scalr-Creds`). This set is skipped when migrating variable sets to Scalr.
+- `--workspaces-file`: File with the exact names of the workspaces to migrate, one per line (`#` starts a comment). Combined with `-w`, a workspace must match both. See [Migrating in waves](#migrating-in-waves)
+- `--team-map`: JSON file mapping TFC/E teams and access levels to Scalr teams and roles; when set, team access is migrated to Scalr access policies. See [Team access](#team-access)
+- `--skip-run-triggers`: Do not migrate TFC/E run triggers
+- `--layout`: `single` (default) writes the generated code to `main.tf`; `per-workspace` writes each workspace with its variables, access policies and run triggers to its own `ws_<name>.tf`
+- `--report-file`: Where to write the JSON report of the run (default: `generated-terraform/<environment>/reports/<mode>-<timestamp>.json`)
+
+Read-only modes, which skip the post-migration steps:
+
+- `--inventory`: Export the TFC/E workspaces in scope, their team access, remote state consumers and run triggers to `--inventory-dir` (default: `migration-inventory`). Needs TFC/E credentials only
+- `--dry-run`: Report what a migration with the same arguments would do, without changing anything in TFC/E or Scalr
+- `--verify`: Check workspaces migrated by earlier runs against TFC/E. `--verify-plan` also queues a plan-only run in each VCS-driven Scalr workspace (this creates runs)
+
+### Exit codes
+
+- `0`: success
+- `1`: the run stopped (invalid input, API error), `--dry-run` found blockers, or `--verify` found mismatches
+- `2`: the migration completed but some workspaces failed; the report names them and the error. `migrate.sh` still runs the post-migration steps so that what was created is imported, then exits with `2`
+
+## Migrating in waves
+
+Large organizations are easier to migrate in batches: a pilot of a few workspaces first, then larger groups as the process proves itself. Every step below reads and writes files, so a person, a CI pipeline or an AI agent can drive it and review it.
+
+```bash
+# 1. Inventory: what exists in TFC/E, who has access to what, who reads whose state, which runs trigger which
+./migrate.sh --tfc-organization my-org --inventory
+
+# 2. Write the wave, one workspace per line, from migration-inventory/*.csv
+cat > wave-1.txt <<'EOF'
+# pilot: leaf workspaces, no consumers
+network-sandbox
+dns-sandbox
+EOF
+
+# 3. Preview it: what would be created, reused or left pending, and what blocks it
+./migrate.sh --tfc-organization my-org --scalr-environment my-env --workspaces-file wave-1.txt --dry-run
+
+# 4. Migrate it
+./migrate.sh --tfc-organization my-org --scalr-environment my-env --workspaces-file wave-1.txt \
+  --team-map team-map.json --layout per-workspace --apply-auto-approve
+
+# 5. Check it
+./migrate.sh --tfc-organization my-org --scalr-environment my-env --workspaces-file wave-1.txt --verify
+```
+
+### What each step writes
+
+- `migration-inventory/` (`--inventory`): `workspaces.csv`, `team-access.csv`, `state-consumers.csv`, `run-triggers.csv`, `inventory.json`, and `team-map.example.json`, a skeleton of the team map listing every team and access level found. Keys of variables are listed, values never are.
+- `generated-terraform/<environment>/reports/` (every other run): `plan-*.json` for `--dry-run`, `migration-*.json` for a migration, `verify-*.json` for `--verify`. One entry per workspace in scope with its status and, for a migration, what happened to its state, each variable key, provider configuration, agent pool, remote state consumers, access policies, run triggers and TFC/E lock. Values of variables and tokens are not written.
+- `generated-terraform/workspace-map.json`: TFC/E workspace → Scalr hostname, environment id and workspace id, merged across all runs and environments. It is how a wave finds the workspaces of earlier waves, and the reference for repointing `terraform_remote_state` and `tfe_outputs` readers at Scalr.
+
+### Dependencies between waves
+
+Remote state consumers and run triggers often connect workspaces of different waves. The migrator handles both directions:
+
+- When a workspace is migrated, its consumers that are already in Scalr (this run or an earlier wave) are allowed to read its state, and the workspaces it consumes from earlier waves get it added as a consumer.
+- A run trigger is created as soon as both workspaces are in Scalr; until then it is reported as `pending`, and the run that migrates the other workspace creates it.
+
+The Scalr API cannot list run triggers, so a re-run recognizes a trigger it created by its `scalr_run_trigger` block in the generated code of the same environment.
+
+Migrating a workspace locks it in TFC/E, so its TFC/E state stops changing. Consumers that still read it from TFC/E keep reading the last outputs until their `terraform_remote_state` (or `tfe_outputs`, which becomes Scalr's `scalr_outputs`) points at Scalr; plan the code change for the consumers together with the wave of the workspace they read from.
+
+## Team access
+
+`--team-map FILE` migrates the TFC/E team access of each workspace to Scalr [access policies](https://docs.scalr.io/docs/identity-and-access-management). Nothing is guessed: every TFC/E team and access level must be mapped explicitly, and `--inventory` writes a skeleton with all of them.
+
+```json
+{
+  "teams": {
+    "platform-admins": "platform-admins",
+    "app-team": "Application Team"
+  },
+  "access_levels": {
+    "read": ["reader"],
+    "plan": ["reader"],
+    "write": ["user"],
+    "admin": ["admin"],
+    "custom": ["user"]
+  },
+  "project_access_levels": {
+    "maintain": ["user"]
+  },
+  "project_access": "ignore",
+  "overrides": [
+    {"team": "app-team", "workspace": "app-*", "roles": ["user"]}
+  ]
+}
+```
+
+- `teams`: TFC/E team name → name of an existing Scalr team (teams are usually synchronized from the identity provider, so the migrator does not create them).
+- `access_levels`: TFC/E workspace access level (`read`, `plan`, `write`, `admin`, `custom`) → Scalr role names.
+- `overrides`: roles for a team on the workspaces matching `workspace` (a pattern, as `-w` takes), checked before `access_levels`.
+- `project_access`: what TFC/E project-level team access becomes — `environment` (one environment access policy per team; requires `--tfc-project`), `workspaces` (a workspace access policy on each workspace of the project), or `ignore` (default). Project access levels (`read`, `write`, `maintain`, `admin`, `custom`) map through `project_access_levels`.
+
+A team or access level that is not mapped, or a team or role that does not exist in Scalr, is reported and gets no policy. When the team already has an access policy on the workspace, it is left unchanged — reported as `exists`, or `exists-with-other-roles` when its roles differ. Policies the migrator creates are written to the generated code as `scalr_access_policy` resources.
+
+The TFC/E token needs permission to read team access (an organization owner token, or one with "Manage Teams" / "Manage Workspaces").
 
 ## Migrating variable sets separately
 
@@ -329,9 +427,10 @@ A provider configuration named in the map that no longer exists in Scalr is repo
 
 The tool generates the following files in the `generated-terraform/$SCALR_ENVIRONMENT` directory so you can manage your workspaces with the Scalr Terraform provider:
 
-- `main.tf`: Contains all Terraform resources
+- `main.tf`: Contains all Terraform resources (with `--layout per-workspace`, the shared ones; each workspace is in its own `ws_<name>.tf`)
 - `backend.tf`: Remote backend configuration
-- `import_commands.sh`: Script to import resources and push state
+- `imports.tf`: Import blocks for the resources the run created
+- `reports/`: JSON reports of the runs, see [What each step writes](#what-each-step-writes)
 
 ### Post-Migration
 

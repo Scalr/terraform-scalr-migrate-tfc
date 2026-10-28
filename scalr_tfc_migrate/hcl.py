@@ -40,6 +40,8 @@ class AbstractTerraformResource:
         self.attributes = attributes
         self.id = None
         self.hcl_resource_type: str = hcl_resource_type
+        # Name of the workspace this block belongs to; --layout per-workspace groups blocks by it.
+        self.owner: Optional[str] = None
 
     def _render_attribute(self, attrs: list, key, value, ident: Optional[int] = None):
         if not ident:

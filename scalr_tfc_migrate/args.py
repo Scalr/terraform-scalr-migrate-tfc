@@ -2,9 +2,10 @@
 import argparse
 import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Set
 
 from scalr_tfc_migrate import constants
+from scalr_tfc_migrate.matching import load_workspace_names
 
 
 @dataclass
@@ -36,6 +37,18 @@ class MigratorArgs:
     skip_post_migration: bool = False
     skip_variable_sets: bool = False
     migrate_variable_sets_only: bool = False
+    workspaces_file: Optional[str] = None
+    # Lower-cased workspace names read from --workspaces-file; None when no file is given.
+    workspace_names: Optional[Set[str]] = None
+    report_file: Optional[str] = None
+    inventory: bool = False
+    inventory_dir: str = constants.DEFAULT_INVENTORY_DIR
+    dry_run: bool = False
+    team_map_file: Optional[str] = None
+    skip_run_triggers: bool = False
+    layout: str = constants.LAYOUT_SINGLE
+    verify: bool = False
+    verify_plan: bool = False
 
     @classmethod
     def from_argparse(cls, args: argparse.Namespace) -> 'MigratorArgs':
@@ -71,5 +84,16 @@ class MigratorArgs:
             skip_post_migration=args.skip_post_migration,
             skip_variable_sets=args.skip_variable_sets,
             migrate_variable_sets_only=args.migrate_variable_sets_only,
+            workspaces_file=args.workspaces_file,
+            workspace_names=load_workspace_names(args.workspaces_file) if args.workspaces_file else None,
+            report_file=args.report_file,
+            inventory=args.inventory,
+            inventory_dir=args.inventory_dir or constants.DEFAULT_INVENTORY_DIR,
+            dry_run=args.dry_run,
+            team_map_file=args.team_map,
+            skip_run_triggers=args.skip_run_triggers,
+            layout=args.layout or constants.LAYOUT_SINGLE,
+            verify=args.verify or args.verify_plan,
+            verify_plan=args.verify_plan,
             credentials_set_name=args.credentials_set_name if args.credentials_set_name else constants.TFC_MIGRATOR_DEFAULT_SECRETS_VARSET_NAME,
         )
