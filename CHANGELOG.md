@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v0.6.0]
+
 Engine changes that let a script, a CI pipeline or an AI agent drive a migration in waves: every input is a file,
 every outcome is machine-readable, and every run can be previewed and checked.
 
@@ -449,32 +451,16 @@ every outcome is machine-readable, and every run can be previewed and checked.
 - Improved error handling for missing required parameters
 - Fixed environment variable handling and default value assignment
 
-### Known Issues
-
-- None at this time
-
-### Migration Path
-
-- No migration required from previous versions as this is the first release
-
+[0.6.0]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.6.0
+[0.5.0]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.5.0
 [0.4.4]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.4.4
-
 [0.4.3]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.4.3
-
 [0.4.2]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.4.2
-
 [0.4.0]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.4.0
-
 [0.3.6]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.3.6
-
 [0.3.5]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.3.5
-
 [0.3.4]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.3.4
-
 [0.3.3]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.3.3
-
 [0.3.2]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.3.2
-
 [0.3.1]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.3.1
-
 [0.3.0]: https://github.com/your-org/terraform-scalr-migrate-tfc/releases/tag/v0.3.0
