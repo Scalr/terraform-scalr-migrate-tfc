@@ -85,6 +85,7 @@ class MigrationService:
         self.team_access_rows: Optional[List[Dict]] = None
         self.scalr_team_ids: Dict[str, Optional[str]] = {}  # Scalr team name -> id
         self.scalr_role_ids: Dict[str, Optional[str]] = {}  # Scalr role name -> id
+        self.scalr_var_set_names: Dict[str, str] = {}  # Scalr variable set id -> name, for generated code
         self.workspace_defaults: WorkspaceDefaults = WorkspaceDefaults(args.workspace_defaults_file)
 
         self.load_account_id()
@@ -547,7 +548,9 @@ class MigrationService:
         ) else "terraform"
 
         working_directory: str = attributes.get("working-directory")
-        working_directory = working_directory.lstrip('/') if working_directory else None
+        # Scalr keeps null and "" apart, and the provider reads an unset attribute as "": an imported
+        # workspace created with null would show a change on every plan.
+        working_directory = working_directory.lstrip('/') if working_directory else ""
 
         workspace_attrs = {
             "name": attributes["name"],
@@ -657,8 +660,9 @@ class MigrationService:
         if ssh_key_id:
             resource_attributes["ssh_key_id"] = ssh_key_id
 
-        if global_remote_state:
-            resource_attributes["remote_state_consumers"] = HClAttribute(["*"])
+        # Explicit consumers are scalr_workspace_remote_state_consumer resources, so a consumer
+        # migrated by a later wave is added without changing this block.
+        resource_attributes["remote_state_sharing"] = bool(global_remote_state)
 
         if vcs_repo:
             resource_attributes["vcs_repo"] = {
@@ -797,6 +801,7 @@ class MigrationService:
             description: str = None
     ) -> str:
         """Create a workspace variable; returns "created", or "exists" when Scalr already has it."""
+        description = description or ""
         relationships = {
             "workspace": {
                 "data": {
@@ -822,18 +827,21 @@ class MigrationService:
                 return "exists"
             raise e
 
-        # Create Terraform resource for non-sensitive variables
+        if is_sensitive:
+            return "created"
+
         var_resource = TerraformResource(
             "scalr_variable",
             f"{workspace.name}_{var_key}",
             {
                 "key": var_key,
                 "description": description,
-                "value": HClAttribute(var_value, True) if is_hcl else var_value,
+                # An HCL variable's value is still a string for the provider.
+                "value": var_value,
                 "category": category,
-                "workspace_id": workspace,
+                "workspace_id": self.workspace_reference(workspace.owner, workspace.id),
                 "hcl": is_hcl,
-                "sensitive": is_sensitive,
+                "sensitive": False,
             },
         )
 
@@ -841,6 +849,12 @@ class MigrationService:
         var_resource.owner = workspace.owner
         self.resource_manager.add_resource(var_resource)
         return "created"
+
+    # Sensitive variables are created in Scalr but not written to the generated code. The code usually
+    # ends up in a repository, and without the value in it the provider would overwrite the secret:
+    # an imported sensitive variable has no value in the state, and the provider sends its default ""
+    # on the first apply, `ignore_changes` notwithstanding.
+    SENSITIVE_NOT_IN_CODE = "not written to the generated code"
 
     def migrate_workspace(self, tf_workspace: Dict, env: Dict) -> bool:
         workspace_name = tf_workspace["attributes"]["name"]
@@ -914,10 +928,21 @@ class MigrationService:
         self.report.set_pending_variables(
             "terraform", "unrecovered", "no plan file of the TFC/E workspace holds its value"
         )
+        if skipped_shell_vars and workspace.id:
+            # Recovered by an earlier run: a re-run would start another TFC/E run for nothing.
+            existing_keys = {
+                variable["attributes"]["key"] for variable in self.scalr.get_workspace_variables(workspace.id)
+                if variable["attributes"]["category"] == "shell"
+            }
+            for key in [key for key in skipped_shell_vars if key in existing_keys]:
+                ConsoleOutput.info(f"Variable '{key}' already exists")
+                self.report.set_variable(key, "exists")
+                skipped_shell_vars.remove(key)
         if self.migrate_sensitive_environment_variables(skipped_shell_vars, tf_workspace, workspace):
             self.report.set_pending_variables(
                 "shell", "scheduled",
-                "a TFC/E plan started in the background writes the value to Scalr, see its log in ./terraform-cloud"
+                "a TFC/E plan started in the background writes the value to Scalr, see its log in ./terraform-cloud; "
+                f"{self.SENSITIVE_NOT_IN_CODE}"
             )
         self.report.set_pending_variables(
             "shell", "unrecovered", "no downloadable configuration version to start a TFC/E run with"
@@ -975,10 +1000,10 @@ class MigrationService:
                 True,
                 skipped_sensitive_vars[var]["description"]
             )
-            self.report.set_variable(var, action, "recovered from the latest plan file")
+            self.report.set_variable(var, action, f"recovered from the latest plan file, {self.SENSITIVE_NOT_IN_CODE}")
 
     @staticmethod
-    def trigger_sync_job(working_directory: str, args: List[str]):
+    def trigger_sync_job(working_directory: str, args: List[str]) -> bool:
         operation = f"{args[0]} {args[1]}"  # e.g. "terraform_plan"
         ConsoleOutput.info(f"Starting job `{operation}`...")
 
@@ -995,13 +1020,11 @@ class MigrationService:
         return_code = job.wait()
 
         if return_code == 0:
-            ConsoleOutput.info("Init succeeded")
-        else:
-            print("Init failed")
-            stdout, stderr = job.communicate()
-            print("STDOUT:\n", stdout)
-            if stderr:
-                print("STDERR:\n", stderr)
+            ConsoleOutput.info(f"`{operation}` succeeded")
+            return True
+        stdout, stderr = job.communicate()
+        ConsoleOutput.error(f"`{operation}` failed:\n{stdout}{stderr or ''}")
+        return False
 
     @staticmethod
     def trigger_background_job(working_directory: str, args: List[str]):
@@ -1088,7 +1111,10 @@ class MigrationService:
         if var_set_id:
             plan_args.append(f"-var=scalr_var_set_id={var_set_id}")
 
-        self.trigger_sync_job(working_directory, ['terraform', 'init', '-input=false'])
+        if not self.trigger_sync_job(working_directory, ['terraform', 'init', '-input=false']):
+            # Without init the plan cannot run, so nothing would read the values.
+            ConsoleOutput.warning("Sensitive environment variables are not migrated: `terraform init` failed")
+            return False
         self.trigger_background_job(working_directory, plan_args)
         return True
 
@@ -1208,8 +1234,9 @@ class MigrationService:
             is_sensitive: bool,
             description: Optional[str] = None
     ) -> None:
+        description = description or ""
         try:
-            self.scalr.create_var_set_variable(
+            response = self.scalr.create_var_set_variable(
                 var_set_id=var_set_id,
                 key=var_key,
                 value=var_value,
@@ -1223,6 +1250,31 @@ class MigrationService:
                 ConsoleOutput.info(f"Variable '{var_key}' already exists in variable set '{var_set_id}'")
                 return
             raise e
+
+        if is_sensitive:
+            return
+
+        var_set_name, var_set_reference = self.var_set_reference(var_set_id)
+        var_resource = TerraformResource("scalr_variable", f"varset_{var_set_name}_{var_key}", {
+            "key": var_key,
+            "description": description,
+            "value": var_value,
+            "category": category,
+            "var_set_id": var_set_reference,
+            "hcl": is_hcl,
+            "sensitive": False,
+        })
+        var_resource.id = response["data"]["id"]
+        self.resource_manager.add_resource(var_resource)
+
+    def var_set_reference(self, var_set_id: str) -> Tuple[str, object]:
+        """
+        (name, reference) of a Scalr variable set: its block when this environment's code has it,
+        otherwise its id, as a set shared by several environments is in the code of one of them.
+        """
+        name = self.scalr_var_set_names.get(var_set_id, var_set_id)
+        resource = self.resource_manager.get_resource("scalr_var_set", name)
+        return name, resource if isinstance(resource, TerraformResource) else var_set_id
 
     def migrate_sensitive_varset_terraform_variables(
             self,
@@ -1508,12 +1560,14 @@ class MigrationService:
         else:
             scalr_var_set = self.scalr.create_var_set(
                 name=var_set_name,
-                description=description,
+                description=description or "",
                 is_shared=is_shared_scalr,
                 environment_ids=environment_ids,
             )["data"]
             entry["action"] = "created"
+            self.add_var_set_resource(scalr_var_set["id"], var_set_name, description, is_global, env)
         entry["scalr_id"] = scalr_var_set["id"]
+        self.scalr_var_set_names[scalr_var_set["id"]] = var_set_name
 
         related_workspace_ids: Set[str] = set()
         if is_global:
@@ -1605,6 +1659,7 @@ class MigrationService:
                     self.scalr.add_workspace_variable_sets(scalr_workspace.id, [scalr_var_set["id"]])
                     linked_workspaces += 1
                     entry["linked_workspaces"].append(scalr_workspace.id)
+                    self.add_workspace_var_set_resource(scalr_workspace, scalr_var_set["id"])
                 except errors.MissingMappingError:
                     skipped_unmapped += 1
                 except errors.APIError as e:
@@ -1620,6 +1675,36 @@ class MigrationService:
                 ConsoleOutput.warning(
                     f"Skipped linking for {skipped_unmapped} workspace(s) that were not migrated"
                 )
+
+    def add_var_set_resource(self, var_set_id: str, name: str, description: Optional[str], is_global: bool,
+                             env: Dict) -> None:
+        """
+        The scalr_var_set block of a variable set this run created. A set that is not shared with
+        the whole account gets the environments of every run that uses it, each of which may have
+        its own code: the block leaves the list to them.
+        """
+        attributes = {"name": name, "description": description or ""}
+        if is_global:
+            attributes["environments"] = ["*"]
+        else:
+            attributes["environments"] = [self.get_environment_resource_id() or env["id"]]
+            attributes["lifecycle"] = HCLObject({"ignore_changes": HClAttribute("[environments]")})
+        resource = TerraformResource("scalr_var_set", name, attributes)
+        resource.id = var_set_id
+        self.resource_manager.add_resource(resource)
+
+    def add_workspace_var_set_resource(self, workspace: AbstractTerraformResource, var_set_id: str) -> None:
+        var_set_name, var_set_reference = self.var_set_reference(var_set_id)
+        resource_name = f"{workspace.owner}_{var_set_name}"
+        if self.resource_manager.has_resource("scalr_workspace_var_set", resource_name):
+            return
+        link = TerraformResource("scalr_workspace_var_set", resource_name, {
+            "workspace_id": self.workspace_reference(workspace.owner, workspace.id),
+            "var_set_id": var_set_reference,
+        })
+        link.id = f"{workspace.id}/{var_set_id}"
+        link.owner = workspace.owner
+        self.resource_manager.add_resource(link)
 
     def should_migrate_workspace(self, workspace_name: str) -> bool:
         if self.args.workspace_names is not None and workspace_name.lower() not in self.args.workspace_names:
@@ -1923,9 +2008,9 @@ class MigrationService:
                     ConsoleOutput.error(f"Error migrating workspace {workspace_name}: {str(e)}")
                     if self.args.debug_enabled:
                         ConsoleOutput.debug(f"Traceback: {traceback.format_exc()}")
+                    # Reported as failed in the summary, not as skipped as well.
                     entry["status"] = run_report.STATUS_FAILED
                     entry["error"] = str(e)
-                    skipped_workspaces.append(workspace_name)
                     continue
                 finally:
                     self.report.end_workspace()
@@ -1959,7 +2044,6 @@ class MigrationService:
 
         consumer_ids = []
         consumer_names = []
-        consumer_references = []
         pending = []
         for state_consumer in tfc_consumers:
             consumer_name = (state_consumer.get("attributes") or {}).get("name", state_consumer["id"])
@@ -1970,7 +2054,6 @@ class MigrationService:
                 continue
             consumer_ids.append(consumer_id)
             consumer_names.append(consumer_name)
-            consumer_references.append(self.workspace_reference(consumer_name, consumer_id))
 
         entry = self.report.workspaces.get(workspace_name)
         if entry is not None:
@@ -1993,10 +2076,19 @@ class MigrationService:
             self.report.warn(f"Unable to update remote state consumers: {e}", entry)
             return
 
-        workspace_resource = self.resource_manager.get_resource('scalr_workspace', workspace_name)
-        if isinstance(workspace_resource, TerraformResource):
-            workspace_resource.add_attribute('remote_state_consumers', consumer_references)
-        ConsoleOutput.info(f"Updated state consumers for workspace '{scalr_id}'...")
+        producer_reference = self.workspace_reference(workspace_name, scalr_id)
+        for consumer_id, consumer_name in zip(consumer_ids, consumer_names):
+            resource_name = f"{workspace_name}_{consumer_name}"
+            if self.resource_manager.has_resource("scalr_workspace_remote_state_consumer", resource_name):
+                continue
+            consumer_resource = TerraformResource("scalr_workspace_remote_state_consumer", resource_name, {
+                "workspace_id": producer_reference,
+                "consumer_id": self.workspace_reference(consumer_name, consumer_id),
+            })
+            consumer_resource.id = f"{scalr_id}/{consumer_id}"
+            consumer_resource.owner = consumer_name
+            self.resource_manager.add_resource(consumer_resource)
+        ConsoleOutput.info(f"Updated state consumers of workspace '{workspace_name}'")
 
     def load_team_map(self) -> None:
         """

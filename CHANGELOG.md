@@ -62,6 +62,22 @@ every outcome is machine-readable, and every run can be previewed and checked.
   `migrate.sh` still runs the post-migration steps in that case, so what was created gets imported, then exits 2.
 - Remote state consumers are resolved through the workspace map as well, so a consumer migrated in a later wave is
   allowed to read the state of a workspace migrated in an earlier one.
+- Generated code: state sharing is `remote_state_sharing` on `scalr_workspace`, and each explicit remote state consumer
+  is a `scalr_workspace_remote_state_consumer` resource (with its import), instead of the deprecated
+  `remote_state_consumers` attribute. A consumer migrated in a later wave no longer needs a change to the block an
+  earlier wave wrote. The provider block requires `scalr/scalr` >= 3.20.0.
+- `imports.tf` keeps the import blocks of earlier runs of the same environment instead of being rewritten, so waves
+  migrated without applying the code in between are all imported by the next apply.
+- A re-run no longer starts a TFC/E run to recover sensitive environment variables that are already in Scalr.
+- Generated code includes variable sets: `scalr_var_set` (from the run that creates the set; a set that is not shared
+  with the whole account ignores changes to `environments`, which every run using it extends), its variables as
+  `scalr_variable` with `var_set_id`, and workspace links as `scalr_workspace_var_set`, all with import blocks.
+- Sensitive variables are no longer written to the generated code: their values ended up in plain text in `.tf`
+  files. They are created in Scalr as before, and the run report says they are not in the code. (Keeping them in the
+  code without a value is not safe: the provider imports a sensitive variable without its value and overwrites it
+  with an empty string on the first apply.)
+- Workspaces and variables without a working directory or description are created with an empty string rather than
+  null, so that a plan right after the import shows no change.
 
 ### Fixed
 
@@ -71,6 +87,14 @@ every outcome is machine-readable, and every run can be previewed and checked.
   the generated code.
 - Recovering sensitive Terraform variables from a plan file no longer fails when the code declares a sensitive variable
   whose value does not come from the workspace itself (e.g. from a variable set or a default).
+- HCL variables were generated as a bare expression (`value = { a = "b" }`), which the provider rejects; values are
+  now quoted strings. String values in the generated code are escaped, so quotes, backslashes and `${` no longer
+  break it or get interpolated.
+- When `terraform init` fails while recovering sensitive environment variables, the plan is no longer started anyway,
+  and the variables are reported as unrecovered.
+- A workspace that failed to migrate is no longer listed among the skipped ones as well in the summary.
+- A variable created for a workspace that already existed in Scalr referenced a data source that is not in the
+  generated code; it now uses the workspace id.
 
 ## [0.5.0] - 2026-09-23
 

@@ -477,8 +477,15 @@ The tool generates the following files in the `generated-terraform/$SCALR_ENVIRO
 
 - `main.tf`: Contains all Terraform resources (with `--layout per-workspace`, the shared ones; each workspace is in its own `ws_<name>.tf`)
 - `backend.tf`: Remote backend configuration
-- `imports.tf`: Import blocks for the resources the run created
+- `imports.tf`: Import blocks for the resources created by this run and by earlier runs of the same environment, so a wave migrated with `--skip-post-migration` (or whose apply failed) is still imported by the next apply. Import blocks of resources that are already in the state do nothing
 - `reports/`: JSON reports of the runs, see [What each step writes](#what-each-step-writes)
+
+The code needs Scalr provider 3.20.0 or later: a workspace's state sharing is `remote_state_sharing`, and each explicit remote state consumer is a `scalr_workspace_remote_state_consumer` resource, which the run that migrates the second of the two workspaces adds without changing the first one's block.
+
+What the code contains:
+
+- **Variable sets**: the run that creates a variable set writes its `scalr_var_set` block and its variables (`scalr_variable` with `var_set_id`); each run writes the links to the workspaces it migrates as `scalr_workspace_var_set` resources. A set that is not shared with the whole account gets the environments of every run that uses it, and each environment has its own code, so its block ignores changes to `environments`.
+- **Sensitive variables are not in the code.** They are created in Scalr with their values, and the run report lists them (`not written to the generated code`). The code usually ends up in a repository, and the provider cannot import a sensitive variable safely: the imported state has no value, so the first apply would overwrite the secret with an empty string. Manage them outside the generated code, or add them yourself with a value from a secret store.
 
 ### Post-Migration
 
