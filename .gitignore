@@ -39,3 +39,6 @@ terraform-cloud/
 # Provider configuration automation
 provider-configuration.parameters.json
 provider-configurations.map.json
+
+# Migration inventory (--inventory)
+migration-inventory/

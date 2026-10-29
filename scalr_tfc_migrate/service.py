@@ -4,6 +4,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -16,8 +17,9 @@ from packaging import version
 from scalr_tfc_migrate.args import MigratorArgs
 from scalr_tfc_migrate.clients import ScalrClient, TFCClient
 from scalr_tfc_migrate.console import ConsoleOutput
-from scalr_tfc_migrate.constants import DEFAULT_PC_MAP_FILE, MAX_TERRAFORM_VERSION
-from scalr_tfc_migrate import errors
+from scalr_tfc_migrate.constants import DEFAULT_PC_MAP_FILE, EXIT_PARTIAL_FAILURE, MAX_TERRAFORM_VERSION
+from scalr_tfc_migrate import errors, report as run_report
+from scalr_tfc_migrate.report import MigrationReport, WorkspaceMap
 from scalr_tfc_migrate.errors import InvalidInputError
 from scalr_tfc_migrate.matching import matches_workspace_patterns
 from scalr_tfc_migrate.hcl import (
@@ -28,14 +30,23 @@ from scalr_tfc_migrate.hcl import (
     TerraformResource,
 )
 from scalr_tfc_migrate.resource_manager import ResourceManager
+from scalr_tfc_migrate.tables import read_table
 from scalr_tfc_migrate.triggers import handle_trigger_patterns
+from scalr_tfc_migrate.workspace_defaults import WorkspaceDefaults
+
+
+# A team or role given as a Scalr id rather than a name, e.g. role-t67mjtmauu7ve4s
+SCALR_TEAM_ID = re.compile(r"^team-[a-z0-9]+$")
+SCALR_ROLE_ID = re.compile(r"^role-[a-z0-9]+$")
 
 
 class MigrationService:
 
     def __init__(self, args: MigratorArgs):
         self.args: MigratorArgs = args
-        self.resource_manager: ResourceManager = ResourceManager(f"generated-terraform/{self.args.scalr_environment}")
+        self.resource_manager: ResourceManager = ResourceManager(
+            f"generated-terraform/{self.args.scalr_environment}", args.layout
+        )
         self.tfc: TFCClient = TFCClient(args.tfc_hostname, args.tfc_token)
         self.scalr: ScalrClient = ScalrClient(args.scalr_hostname, args.scalr_token)
         self.environment_resource_id: Optional[AbstractTerraformResource] = None
@@ -59,9 +70,27 @@ class MigrationService:
         self.agent_pool_data_sources: Dict[str, TerraformDataSource] = {}  # agent_pool_name -> data_source
         self.tfc_workspaces_cache: Dict[str, Dict] = {}  # tfc_workspace_id -> workspace payload
         self.workspace_vars_cache: Dict[str, List[Dict]] = {}  # tfc_workspace_id -> vars list
+        self.env: Optional[Dict] = None  # destination Scalr environment, once created or found
+        self.report: MigrationReport = MigrationReport(
+            args, "plan" if args.dry_run else "verify" if args.verify else "migration"
+        )
+        # Workspaces migrated by earlier runs, so this run can resolve them too.
+        self.workspace_map: WorkspaceMap = WorkspaceMap()
+        # --team-map: TFC team access → Scalr access policies
+        self.team_map: Optional[Dict] = None
+        self.tfc_team_names: Optional[Dict[str, str]] = None  # TFC team id -> name
+        self.tfc_project_team_access: Dict[str, List[Dict]] = {}  # TFC project id -> team grants
+        self.tfc_project_names: Optional[Dict[str, str]] = None  # TFC project id -> name
+        # --team-access: the team grants to migrate, instead of the ones read from TFC
+        self.team_access_rows: Optional[List[Dict]] = None
+        self.scalr_team_ids: Dict[str, Optional[str]] = {}  # Scalr team name -> id
+        self.scalr_role_ids: Dict[str, Optional[str]] = {}  # Scalr role name -> id
+        self.scalr_var_set_names: Dict[str, str] = {}  # Scalr variable set id -> name, for generated code
+        self.workspace_defaults: WorkspaceDefaults = WorkspaceDefaults(args.workspace_defaults_file)
 
         self.load_account_id()
         self.load_provider_configuration_map()
+        self.load_team_map()
 
     def create_workspace_map(self, tfc_workspace_id, workspace: AbstractTerraformResource) -> None:
         self.workspaces_map[tfc_workspace_id] = workspace
@@ -72,6 +101,78 @@ class MigrationService:
                 f"The Scalr workspace for the source TFC workspace {tfc_workspace_id} does not exist or was not created within the current runtime."
             )
         return self.workspaces_map[tfc_workspace_id]
+
+    def resolve_scalr_workspace(self, tfc_workspace_id: str) -> Tuple[str, str]:
+        """
+        (Scalr workspace id, name) of a TFC workspace migrated by this run or by an earlier one,
+        according to the workspace map. Earlier runs matter when workspaces move in waves: a
+        consumer or trigger migrated today may point at a workspace migrated last week.
+        """
+        mapped = self.workspaces_map.get(tfc_workspace_id)
+        if mapped:
+            tf_workspace = self.tfc_workspaces_cache.get(tfc_workspace_id) or {}
+            name = (tf_workspace.get("attributes") or {}).get("name") or mapped.attributes.get("name")
+            return mapped.id, name
+
+        entry = self.workspace_map.get_by_tfc_id(tfc_workspace_id)
+        if entry:
+            return entry["scalr"]["workspace_id"], entry["scalr"]["workspace"]
+
+        raise errors.MissingMappingError(
+            f"The TFC workspace {tfc_workspace_id} has not been migrated to Scalr yet"
+        )
+
+    def workspace_reference(self, workspace_name: str, scalr_workspace_id: str):
+        """
+        What generated code uses to point at a workspace: its resource when the generated code
+        manages it, its literal id otherwise (a workspace migrated into another environment, or
+        found already existing in Scalr).
+        """
+        resource = self.resource_manager.get_resource("scalr_workspace", workspace_name)
+        if isinstance(resource, TerraformResource):
+            return resource
+        return scalr_workspace_id
+
+    def run(self) -> int:
+        try:
+            self.migrate()
+        finally:
+            self.save_results()
+
+        failed = self.report.failed()
+        if failed:
+            ConsoleOutput.error(f"Failed to migrate {len(failed)} workspace(s): {', '.join(failed)}")
+            return EXIT_PARTIAL_FAILURE
+        return 0
+
+    def save_results(self) -> None:
+        """Write the run report, and record the workspaces of this run in the workspace map."""
+        if self.env:
+            for tfc_id, workspace in self.workspaces_map.items():
+                tf_workspace = self.tfc_workspaces_cache.get(tfc_id)
+                if not tf_workspace or not workspace.id:
+                    continue
+                name = tf_workspace["attributes"]["name"]
+                self.workspace_map.record(
+                    {
+                        "hostname": self.args.tfc_hostname,
+                        "organization": self.args.tfc_organization,
+                        "workspace": name,
+                        "id": tfc_id,
+                    },
+                    {
+                        "hostname": self.args.scalr_hostname,
+                        "environment": self.env["attributes"]["name"],
+                        "environment_id": self.env["id"],
+                        "workspace": name,
+                        "workspace_id": workspace.id,
+                    },
+                )
+            self.workspace_map.save()
+            ConsoleOutput.info(f"Workspace map updated: {self.workspace_map.path}")
+
+        path = self.report.write(self.resource_manager.output_dir)
+        ConsoleOutput.info(f"Run report written to {path}")
 
     def cache_tfc_workspace(self, tf_workspace: Dict) -> None:
         self.tfc_workspaces_cache[tf_workspace["id"]] = tf_workspace
@@ -415,8 +516,11 @@ class MigrationService:
         if workspace is not None:
             workspace_data = TerraformDataSource("scalr_workspace", env_id, workspace['attributes'])
             workspace_data.id = workspace["id"]
+            workspace_data.owner = attributes['name']
             if tf_workspace.get("id"):
                 self.create_workspace_map(tf_workspace['id'], workspace_data)
+            if not is_management_workspace and self.report.current is not None:
+                self.report.current["scalr_id"] = workspace["id"]
             return workspace_data
 
         ConsoleOutput.info(f"Creating workspace '{attributes['name']}'...")
@@ -444,7 +548,9 @@ class MigrationService:
         ) else "terraform"
 
         working_directory: str = attributes.get("working-directory")
-        working_directory = working_directory.lstrip('/') if working_directory else None
+        # Scalr keeps null and "" apart, and the provider reads an unset attribute as "": an imported
+        # workspace created with null would show a change on every plan.
+        working_directory = working_directory.lstrip('/') if working_directory else ""
 
         workspace_attrs = {
             "name": attributes["name"],
@@ -456,6 +562,9 @@ class MigrationService:
             "remote-state-sharing": global_remote_state,
             "iac-platform": platform,
         }
+
+        defaults = {} if is_management_workspace else self.workspace_defaults.for_workspace(attributes["name"])
+        workspace_attrs.update(WorkspaceDefaults.api_attributes(defaults))
 
         vcs_id = None
         branch = None
@@ -518,6 +627,18 @@ class MigrationService:
 
         ConsoleOutput.success(f"Created workspace '{attributes['name']}'")
 
+        ssh_key_id = defaults.get("ssh_key_id")
+        if ssh_key_id:
+            try:
+                self.scalr.link_ssh_key(response["data"]["id"], ssh_key_id)
+                ConsoleOutput.info(f"Linked SSH key: {ssh_key_id}")
+            except errors.APIError as e:
+                # The workspace exists now; a re-run would reuse it and not come back here.
+                message = f"Unable to link SSH key '{ssh_key_id}', link it by hand: {e}"
+                ConsoleOutput.warning(message)
+                self.report.warn(message)
+                ssh_key_id = None
+
         if pc_id:
             # A provider configuration that is not shared has to allow this environment.
             self.grant_environment_access(configuration, env_id)
@@ -535,9 +656,13 @@ class MigrationService:
             "deletion_protection_enabled": not self.args.disable_deletion_protection,
             "iac_platform": platform,
         }
+        resource_attributes.update({key: value for key, value in defaults.items() if key != "ssh_key_id"})
+        if ssh_key_id:
+            resource_attributes["ssh_key_id"] = ssh_key_id
 
-        if global_remote_state:
-            resource_attributes["remote_state_consumers"] = HClAttribute(["*"])
+        # Explicit consumers are scalr_workspace_remote_state_consumer resources, so a consumer
+        # migrated by a later wave is added without changing this block.
+        resource_attributes["remote_state_sharing"] = bool(global_remote_state)
 
         if vcs_repo:
             resource_attributes["vcs_repo"] = {
@@ -568,31 +693,50 @@ class MigrationService:
         )
 
         workspace_resource.id = response["data"]["id"]
+        workspace_resource.owner = attributes["name"]
         if tf_workspace.get('id'):
             self.create_workspace_map(tf_workspace['id'], workspace_resource)
 
         if not is_management_workspace:
             self.resource_manager.add_resource(workspace_resource)
+            if self.report.current is not None:
+                self.report.current.update({
+                    "scalr_id": workspace_resource.id,
+                    "created": True,
+                    "terraform_version": terraform_version,
+                    "provider_configuration": pc_name if pc_id else None,
+                    "agent_pool": agent_pool_name_for_terraform,
+                    # What was applied: an SSH key that failed to link is left out.
+                    "workspace_defaults": {key: value for key, value in defaults.items()
+                                           if key != "ssh_key_id" or ssh_key_id},
+                })
 
         return workspace_resource
 
     def create_state(self, tf_workspace: Dict, workspace: AbstractTerraformResource) -> None:
         current_scalr_state = self.scalr.get_current_state(workspace.id)
         current_tfc_state = self.tfc.get_current_state(tf_workspace)
+        state_report = {"action": "unavailable", "tfc_serial": None, "scalr_serial": None}
+        if self.report.current is not None:
+            self.report.current["state"] = state_report
         if not current_tfc_state:
             ConsoleOutput.warning("State file is unavailable")
+            self.report.warn("TFC/E workspace has no state file")
             return
 
         state = current_tfc_state["attributes"]
 
         if not state["hosted-state-download-url"]:
             ConsoleOutput.warning("State file URL is unavailable")
+            self.report.warn("TFC/E state file download URL is unavailable")
             return
 
         raw_state = self.tfc.make_request(state["hosted-state-download-url"])
         serial = current_scalr_state["data"]["attributes"]["serial"] if current_scalr_state else None
+        state_report.update({"tfc_serial": raw_state["serial"], "scalr_serial": serial})
         if serial == raw_state["serial"]:
             ConsoleOutput.info(f"State with serial '{serial}' is up-to-date")
+            state_report["action"] = "up-to-date"
             return
 
         raw_state["terraform_version"] = self.enforce_max_version(raw_state["terraform_version"], 'State file')
@@ -617,6 +761,7 @@ class MigrationService:
         }
 
         self.scalr.create_state_version(workspace.id, state_attrs)
+        state_report.update({"action": "uploaded", "scalr_serial": raw_state["serial"]})
 
     def create_backend_config(self) -> None:
         if self.args.skip_post_migration:
@@ -654,7 +799,9 @@ class MigrationService:
             is_hcl: bool,
             is_sensitive: bool,
             description: str = None
-    ) -> None:
+    ) -> str:
+        """Create a workspace variable; returns "created", or "exists" when Scalr already has it."""
+        description = description or ""
         relationships = {
             "workspace": {
                 "data": {
@@ -677,26 +824,37 @@ class MigrationService:
         except errors.APIError as e:
             if e.code == 422:
                 ConsoleOutput.info(f"Variable '{var_key}' already exists")
-                return
+                return "exists"
             raise e
 
-        # Create Terraform resource for non-sensitive variables
+        if is_sensitive:
+            return "created"
+
         var_resource = TerraformResource(
             "scalr_variable",
             f"{workspace.name}_{var_key}",
             {
                 "key": var_key,
                 "description": description,
-                "value": HClAttribute(var_value, True) if is_hcl else var_value,
+                # An HCL variable's value is still a string for the provider.
+                "value": var_value,
                 "category": category,
-                "workspace_id": workspace,
+                "workspace_id": self.workspace_reference(workspace.owner, workspace.id),
                 "hcl": is_hcl,
-                "sensitive": is_sensitive,
+                "sensitive": False,
             },
         )
 
         var_resource.id = response["data"]["id"]
+        var_resource.owner = workspace.owner
         self.resource_manager.add_resource(var_resource)
+        return "created"
+
+    # Sensitive variables are created in Scalr but not written to the generated code. The code usually
+    # ends up in a repository, and without the value in it the provider would overwrite the secret:
+    # an imported sensitive variable has no value in the state, and the provider sends its default ""
+    # on the first apply, `ignore_changes` notwithstanding.
+    SENSITIVE_NOT_IN_CODE = "not written to the generated code"
 
     def migrate_workspace(self, tf_workspace: Dict, env: Dict) -> bool:
         workspace_name = tf_workspace["attributes"]["name"]
@@ -707,6 +865,10 @@ class MigrationService:
 
         ConsoleOutput.info(f"Migrating state...")
         self.create_state(tf_workspace, workspace)
+
+        if self.team_map:
+            ConsoleOutput.info("Migrating team access...")
+            self.migrate_team_access(tf_workspace, workspace)
 
         # Skip variable migration if requested
         if self.args.skip_variables == "*":
@@ -724,9 +886,12 @@ class MigrationService:
             is_hcl = attributes["hcl"]
             var_key: str = attributes["key"]
 
+            category = self.normalize_variable_category(attributes["category"])
+
             # Skip variable if it matches any of the skip patterns
             if any(fnmatch.fnmatch(var_key, pattern.strip()) for pattern in skip_patterns):
                 ConsoleOutput.info(f"Skipping variable '{var_key}' as requested")
+                self.report.add_variable(var_key, category, attributes["sensitive"], "skipped", "skip-pattern")
                 continue
 
             pc_name = self.is_provider_credential(api_var)
@@ -734,12 +899,12 @@ class MigrationService:
                 ConsoleOutput.info(
                     f"Skipping variable '{var_key}': provider configuration '{pc_name}' already holds it"
                 )
+                self.report.add_variable(
+                    var_key, category, attributes["sensitive"], "skipped", f"provider-credential:{pc_name}"
+                )
                 continue
 
-            if attributes["category"] == "env":
-                attributes["category"] = "shell"
-
-            category: str = attributes["category"]
+            attributes["category"] = category
 
             if attributes["sensitive"]:
                 msg = f"Skipping creation of sensitive {category} variable '{var_key}'"
@@ -750,17 +915,43 @@ class MigrationService:
                     msg += ", will try to create if from the TFC environment"
                     skipped_shell_vars.append(var_key)
                 ConsoleOutput.info(msg)
+                self.report.add_variable(var_key, category, True, "pending")
                 continue
 
             var_value = attributes["value"]
-            self.migrate_variable(workspace, var_key, var_value, category, is_hcl, False, attributes["description"])
+            action = self.migrate_variable(
+                workspace, var_key, var_value, category, is_hcl, False, attributes["description"]
+            )
+            self.report.add_variable(var_key, category, False, action)
 
         self.migrate_sensitive_terraform_variables(skipped_sensitive_vars, tf_workspace, workspace)
-        self.migrate_sensitive_environment_variables(skipped_shell_vars, tf_workspace, workspace)
+        self.report.set_pending_variables(
+            "terraform", "unrecovered", "no plan file of the TFC/E workspace holds its value"
+        )
+        if skipped_shell_vars and workspace.id:
+            # Recovered by an earlier run: a re-run would start another TFC/E run for nothing.
+            existing_keys = {
+                variable["attributes"]["key"] for variable in self.scalr.get_workspace_variables(workspace.id)
+                if variable["attributes"]["category"] == "shell"
+            }
+            for key in [key for key in skipped_shell_vars if key in existing_keys]:
+                ConsoleOutput.info(f"Variable '{key}' already exists")
+                self.report.set_variable(key, "exists")
+                skipped_shell_vars.remove(key)
+        if self.migrate_sensitive_environment_variables(skipped_shell_vars, tf_workspace, workspace):
+            self.report.set_pending_variables(
+                "shell", "scheduled",
+                "a TFC/E plan started in the background writes the value to Scalr, see its log in ./terraform-cloud; "
+                f"{self.SENSITIVE_NOT_IN_CODE}"
+            )
+        self.report.set_pending_variables(
+            "shell", "unrecovered", "no downloadable configuration version to start a TFC/E run with"
+        )
 
         if self.args.lock:
             if tf_workspace["attributes"]["locked"]:
                 ConsoleOutput.info("Workspace is already locked")
+                self.report.current["tfc_locked"] = True
                 return True
 
             env_name = self.args.scalr_environment
@@ -769,6 +960,7 @@ class MigrationService:
                 f"Workspace is migrated to the Scalr environment '{env_name}' with name '{workspace_name}'."
             )
             ConsoleOutput.success(f"Workspace '{workspace_name}' is locked")
+            self.report.current["tfc_locked"] = True
 
         return True
 
@@ -793,9 +985,13 @@ class MigrationService:
         for var in configuration_variables:
             if not "sensitive" in configuration_variables[var]:
                 continue
+            # A variable declared sensitive in the code may get its value from a variable set or a
+            # default rather than from the workspace; only the workspace's own are migrated here.
+            if var not in skipped_sensitive_vars or "value" not in variables.get(var, {}):
+                continue
 
             ConsoleOutput.info(f"Creating sensitive variable '{var}' from the plan file")
-            self.migrate_variable(
+            action = self.migrate_variable(
                 workspace,
                 var,
                 variables[var]["value"],
@@ -804,9 +1000,10 @@ class MigrationService:
                 True,
                 skipped_sensitive_vars[var]["description"]
             )
+            self.report.set_variable(var, action, f"recovered from the latest plan file, {self.SENSITIVE_NOT_IN_CODE}")
 
     @staticmethod
-    def trigger_sync_job(working_directory: str, args: List[str]):
+    def trigger_sync_job(working_directory: str, args: List[str]) -> bool:
         operation = f"{args[0]} {args[1]}"  # e.g. "terraform_plan"
         ConsoleOutput.info(f"Starting job `{operation}`...")
 
@@ -823,13 +1020,11 @@ class MigrationService:
         return_code = job.wait()
 
         if return_code == 0:
-            ConsoleOutput.info("Init succeeded")
-        else:
-            print("Init failed")
-            stdout, stderr = job.communicate()
-            print("STDOUT:\n", stdout)
-            if stderr:
-                print("STDERR:\n", stderr)
+            ConsoleOutput.info(f"`{operation}` succeeded")
+            return True
+        stdout, stderr = job.communicate()
+        ConsoleOutput.error(f"`{operation}` failed:\n{stdout}{stderr or ''}")
+        return False
 
     @staticmethod
     def trigger_background_job(working_directory: str, args: List[str]):
@@ -916,7 +1111,10 @@ class MigrationService:
         if var_set_id:
             plan_args.append(f"-var=scalr_var_set_id={var_set_id}")
 
-        self.trigger_sync_job(working_directory, ['terraform', 'init', '-input=false'])
+        if not self.trigger_sync_job(working_directory, ['terraform', 'init', '-input=false']):
+            # Without init the plan cannot run, so nothing would read the values.
+            ConsoleOutput.warning("Sensitive environment variables are not migrated: `terraform init` failed")
+            return False
         self.trigger_background_job(working_directory, plan_args)
         return True
 
@@ -1036,8 +1234,9 @@ class MigrationService:
             is_sensitive: bool,
             description: Optional[str] = None
     ) -> None:
+        description = description or ""
         try:
-            self.scalr.create_var_set_variable(
+            response = self.scalr.create_var_set_variable(
                 var_set_id=var_set_id,
                 key=var_key,
                 value=var_value,
@@ -1052,19 +1251,45 @@ class MigrationService:
                 return
             raise e
 
+        if is_sensitive:
+            return
+
+        var_set_name, var_set_reference = self.var_set_reference(var_set_id)
+        var_resource = TerraformResource("scalr_variable", f"varset_{var_set_name}_{var_key}", {
+            "key": var_key,
+            "description": description,
+            "value": var_value,
+            "category": category,
+            "var_set_id": var_set_reference,
+            "hcl": is_hcl,
+            "sensitive": False,
+        })
+        var_resource.id = response["data"]["id"]
+        self.resource_manager.add_resource(var_resource)
+
+    def var_set_reference(self, var_set_id: str) -> Tuple[str, object]:
+        """
+        (name, reference) of a Scalr variable set: its block when this environment's code has it,
+        otherwise its id, as a set shared by several environments is in the code of one of them.
+        """
+        name = self.scalr_var_set_names.get(var_set_id, var_set_id)
+        resource = self.resource_manager.get_resource("scalr_var_set", name)
+        return name, resource if isinstance(resource, TerraformResource) else var_set_id
+
     def migrate_sensitive_varset_terraform_variables(
             self,
             skipped_sensitive_vars: Dict[str, Dict],
             candidate_workspaces: List[Dict],
             scalr_var_set_id: str
-    ) -> None:
+    ) -> Set[str]:
+        """Returns the keys whose value could not be recovered."""
         if not skipped_sensitive_vars:
-            return
+            return set()
 
         pending_vars = set(skipped_sensitive_vars.keys())
         if not candidate_workspaces:
             ConsoleOutput.warning("Unable to find candidate workspaces to read sensitive variable-set Terraform values")
-            return
+            return pending_vars
 
         for tf_workspace in candidate_workspaces:
             if not pending_vars:
@@ -1118,20 +1343,22 @@ class MigrationService:
             ConsoleOutput.warning(
                 f"Unable to migrate sensitive Terraform variable-set variables: {', '.join(sorted(pending_vars))}"
             )
+        return pending_vars
 
     def migrate_sensitive_varset_environment_variables(
             self,
             skipped_shell_vars: List[str],
             candidate_workspaces: List[Dict],
             scalr_var_set_id: str
-    ) -> None:
+    ) -> bool:
+        """Returns whether a TFC run was started to recover the values."""
         if not skipped_shell_vars:
-            return
+            return False
 
         if not candidate_workspaces:
             ConsoleOutput.warning(
                 "Unable to find candidate workspaces to migrate sensitive variable-set shell variables")
-            return
+            return False
 
         for tf_workspace in candidate_workspaces:
             workspace_name = tf_workspace["attributes"]["name"]
@@ -1142,11 +1369,12 @@ class MigrationService:
                     tf_workspace=tf_workspace,
                     var_set_id=scalr_var_set_id
             ):
-                return
+                return True
 
         ConsoleOutput.warning(
             f"Unable to schedule migration for sensitive variable-set shell variables: {', '.join(skipped_shell_vars)}"
         )
+        return False
 
     def should_include_tfc_variable_set(
             self,
@@ -1275,6 +1503,7 @@ class MigrationService:
                 )
             except Exception as e:
                 ConsoleOutput.error(f"Failed to migrate variable set '{var_set_name}': {e}")
+                self.report.variable_set(var_set_name, tf_var_set["id"])["error"] = str(e)
                 if self.args.debug_enabled:
                     ConsoleOutput.debug(f"Traceback: {traceback.format_exc()}")
 
@@ -1297,6 +1526,8 @@ class MigrationService:
         is_global = tf_var_set_attr.get("global", False)
         var_set_name = tf_var_set_attr["name"]
         description = tf_var_set_attr.get("description")
+        entry = self.report.variable_set(var_set_name, var_set_id)
+        entry["shared"] = is_global
         # TFC org-global sets map to Scalr account-wide variable sets (`is-shared`).
         # Non-global sets stay environment-scoped; environment IDs are still merged per run below.
         is_shared_scalr = is_global
@@ -1309,6 +1540,8 @@ class MigrationService:
                 f"Skipping variable set '{var_set_name}': provider configuration '{holders[0]}' "
                 f"already holds every variable it defines"
             )
+            entry["action"] = "skipped"
+            entry["reason"] = f"provider-credential:{holders[0]}"
             return
 
         existing_scalr_var_set = self.scalr.get_var_sets(name=var_set_name)["data"]
@@ -1323,13 +1556,18 @@ class MigrationService:
                 is_shared=is_shared_scalr,
                 environment_ids=environment_ids,
             )["data"]
+            entry["action"] = "updated"
         else:
             scalr_var_set = self.scalr.create_var_set(
                 name=var_set_name,
-                description=description,
+                description=description or "",
                 is_shared=is_shared_scalr,
                 environment_ids=environment_ids,
             )["data"]
+            entry["action"] = "created"
+            self.add_var_set_resource(scalr_var_set["id"], var_set_name, description, is_global, env)
+        entry["scalr_id"] = scalr_var_set["id"]
+        self.scalr_var_set_names[scalr_var_set["id"]] = var_set_name
 
         related_workspace_ids: Set[str] = set()
         if is_global:
@@ -1388,31 +1626,40 @@ class MigrationService:
         # reasons outside of this run's control. Keep such failures from aborting the variable set
         # migration, so the remaining variables and the workspace links are still created.
         try:
-            self.migrate_sensitive_varset_terraform_variables(
+            entry["sensitive_unrecovered"] = sorted(self.migrate_sensitive_varset_terraform_variables(
                 skipped_sensitive_vars=skipped_sensitive_tf_vars,
                 candidate_workspaces=candidate_workspaces,
                 scalr_var_set_id=scalr_var_set["id"],
-            )
-            self.migrate_sensitive_varset_environment_variables(
-                skipped_shell_vars=skipped_sensitive_shell_vars,
-                candidate_workspaces=candidate_workspaces,
-                scalr_var_set_id=scalr_var_set["id"],
-            )
+            ))
+            if self.migrate_sensitive_varset_environment_variables(
+                    skipped_shell_vars=skipped_sensitive_shell_vars,
+                    candidate_workspaces=candidate_workspaces,
+                    scalr_var_set_id=scalr_var_set["id"],
+            ):
+                entry["sensitive_scheduled"] = sorted(skipped_sensitive_shell_vars)
+            else:
+                entry["sensitive_unrecovered"] = sorted(
+                    set(entry["sensitive_unrecovered"]) | set(skipped_sensitive_shell_vars)
+                )
         except Exception as e:
             ConsoleOutput.error(
                 f"Unable to migrate sensitive variables of variable set '{var_set_name}': {e}"
             )
+            entry["warnings"].append(f"Unable to migrate sensitive variables: {e}")
             if self.args.debug_enabled:
                 ConsoleOutput.debug(f"Traceback: {traceback.format_exc()}")
 
         if not is_global:
             linked_workspaces = 0
             skipped_unmapped = 0
+            entry["linked_workspaces"] = []
             for tf_workspace_id in sorted(related_workspace_ids):
                 try:
                     scalr_workspace = self.get_mapped_scalr_workspace_id(tf_workspace_id)
                     self.scalr.add_workspace_variable_sets(scalr_workspace.id, [scalr_var_set["id"]])
                     linked_workspaces += 1
+                    entry["linked_workspaces"].append(scalr_workspace.id)
+                    self.add_workspace_var_set_resource(scalr_workspace, scalr_var_set["id"])
                 except errors.MissingMappingError:
                     skipped_unmapped += 1
                 except errors.APIError as e:
@@ -1429,8 +1676,54 @@ class MigrationService:
                     f"Skipped linking for {skipped_unmapped} workspace(s) that were not migrated"
                 )
 
+    def add_var_set_resource(self, var_set_id: str, name: str, description: Optional[str], is_global: bool,
+                             env: Dict) -> None:
+        """
+        The scalr_var_set block of a variable set this run created. A set that is not shared with
+        the whole account gets the environments of every run that uses it, each of which may have
+        its own code: the block leaves the list to them.
+        """
+        attributes = {"name": name, "description": description or ""}
+        if is_global:
+            attributes["environments"] = ["*"]
+        else:
+            attributes["environments"] = [self.get_environment_resource_id() or env["id"]]
+            attributes["lifecycle"] = HCLObject({"ignore_changes": HClAttribute("[environments]")})
+        resource = TerraformResource("scalr_var_set", name, attributes)
+        resource.id = var_set_id
+        self.resource_manager.add_resource(resource)
+
+    def add_workspace_var_set_resource(self, workspace: AbstractTerraformResource, var_set_id: str) -> None:
+        var_set_name, var_set_reference = self.var_set_reference(var_set_id)
+        resource_name = f"{workspace.owner}_{var_set_name}"
+        if self.resource_manager.has_resource("scalr_workspace_var_set", resource_name):
+            return
+        link = TerraformResource("scalr_workspace_var_set", resource_name, {
+            "workspace_id": self.workspace_reference(workspace.owner, workspace.id),
+            "var_set_id": var_set_reference,
+        })
+        link.id = f"{workspace.id}/{var_set_id}"
+        link.owner = workspace.owner
+        self.resource_manager.add_resource(link)
+
     def should_migrate_workspace(self, workspace_name: str) -> bool:
+        if self.args.workspace_names is not None and workspace_name.lower() not in self.args.workspace_names:
+            return False
         return matches_workspace_patterns(workspace_name, self.args.workspaces)
+
+    def warn_unlisted_workspaces(self, seen_names: Set[str]) -> None:
+        """Names of the --workspaces-file that TFC did not list are typos, or outside --tfc-project."""
+        if self.args.workspace_names is None:
+            return
+        missing = sorted(self.args.workspace_names - {name.lower() for name in seen_names})
+        if missing:
+            scope = f" project '{self.args.tfc_project}'" if self.args.tfc_project else ""
+            message = (
+                f"{len(missing)} workspace(s) listed in '{self.args.workspaces_file}' do not exist in TFC/E"
+                f"{scope}: {', '.join(missing)}"
+            )
+            ConsoleOutput.warning(message)
+            self.report.warnings.append(message)
 
     def init_backend_secrets(self):
         if self.args.skip_backend_secrets:
@@ -1578,6 +1871,7 @@ class MigrationService:
         # Create or get the main environment
         ConsoleOutput.info(f"Creating destination Scalr environment '{self.args.scalr_environment}'...")
         env = self.create_environment(self.args.scalr_environment)
+        self.env = env
         self.update_provider_configuration(env['id'])
 
         # Create backend configuration for the management workspace
@@ -1590,6 +1884,8 @@ class MigrationService:
         else:
             successful_workspaces, skipped_workspaces = self.migrate_workspaces(env, project_id)
             scope_tfc_workspace_ids = set(self.workspaces_map.keys())
+            if self.team_map and self.team_map["project_access"] == "environment":
+                self.migrate_project_team_access(env, project_id)
 
         self.migrate_variable_sets(env, project_id, scope_tfc_workspace_ids)
 
@@ -1622,6 +1918,7 @@ class MigrationService:
 
         scope_tfc_workspace_ids: Set[str] = set()
         missing_in_scalr: List[str] = []
+        seen_names: Set[str] = set()
         next_page = 1
 
         while True:
@@ -1631,6 +1928,7 @@ class MigrationService:
             for tf_workspace in tfc_workspaces["data"]:
                 self.cache_tfc_workspace(tf_workspace)
                 workspace_name = tf_workspace["attributes"]["name"]
+                seen_names.add(workspace_name)
 
                 if not self.should_migrate_workspace(workspace_name):
                     continue
@@ -1653,6 +1951,7 @@ class MigrationService:
             if not next_page:
                 break
 
+        self.warn_unlisted_workspaces(seen_names)
         ConsoleOutput.info(
             f"{len(scope_tfc_workspace_ids)} TFC workspace(s) in scope, "
             f"{len(self.workspaces_map)} of them already exist in '{env['attributes']['name']}'"
@@ -1672,6 +1971,7 @@ class MigrationService:
         skipped_workspaces = []
         successful_workspaces = []
         workspace_state_consumers = {}
+        seen_names: Set[str] = set()
 
         while True:
             tfc_workspaces = self.tfc.get_workspaces(tf_organization, next_page, project_id=project_id)
@@ -1680,67 +1980,512 @@ class MigrationService:
             for tf_workspace in tfc_workspaces["data"]:
                 self.cache_tfc_workspace(tf_workspace)
                 workspace_name = tf_workspace["attributes"]["name"]
-                state_consumers = tf_workspace["relationships"].get('remote-state-consumers')
-                if not tf_workspace["attributes"].get("global-remote-state", False) and state_consumers:
-                    tfc_consumers = self.tfc.get_by_short_url(state_consumers['links']['related'])['data']
-                    if tfc_consumers:
-                        workspace_state_consumers.update({tf_workspace['id']: {
-                            "consumers":tfc_consumers,
-                            "workspace_name": workspace_name,
-                        }})
+                seen_names.add(workspace_name)
+                tfc_consumers = self.tfc.get_remote_state_consumers(tf_workspace)
+                if tfc_consumers:
+                    workspace_state_consumers.update({tf_workspace['id']: {
+                        "consumers": tfc_consumers,
+                        "workspace_name": workspace_name,
+                    }})
 
                 if not self.should_migrate_workspace(workspace_name):
                     skipped_workspaces.append(workspace_name)
                     continue
 
+                entry = self.report.begin_workspace(workspace_name, tf_workspace["id"])
                 try:
                     result = self.migrate_workspace(tf_workspace, env)
 
                     if not result:
+                        entry["status"] = run_report.STATUS_SKIPPED
                         skipped_workspaces.append(workspace_name)
                         continue
 
+                    entry["status"] = run_report.STATUS_MIGRATED if entry["created"] else run_report.STATUS_EXISTING
                     successful_workspaces.append(workspace_name)
                     ConsoleOutput.success(f"Successfully migrated workspace: {workspace_name}")
                 except Exception as e:
                     ConsoleOutput.error(f"Error migrating workspace {workspace_name}: {str(e)}")
                     if self.args.debug_enabled:
                         ConsoleOutput.debug(f"Traceback: {traceback.format_exc()}")
-                    skipped_workspaces.append(workspace_name)
+                    # Reported as failed in the summary, not as skipped as well.
+                    entry["status"] = run_report.STATUS_FAILED
+                    entry["error"] = str(e)
                     continue
+                finally:
+                    self.report.end_workspace()
 
             if not next_page:
                 break
 
+        self.warn_unlisted_workspaces(seen_names)
+
         if len(workspace_state_consumers):
             ConsoleOutput.section("Post-migrating state consumers")
         for tfc_id, consumers_data in workspace_state_consumers.items():
-            try:
-                scalr_id = self.get_mapped_scalr_workspace_id(tfc_id).id
-                consumer_ids = []
-                consumer_resources: List[AbstractTerraformResource] = []
-                for state_consumer in consumers_data['consumers']:
-                    consumer = self.get_mapped_scalr_workspace_id(state_consumer['id'])
-                    consumer_ids.append(consumer.id)
-                    consumer_resources.append(consumer)
+            self.migrate_state_consumers(tfc_id, consumers_data["workspace_name"], consumers_data["consumers"])
 
-                if consumer_ids:
-                    self.scalr.update_consumers(scalr_id, consumer_ids)
-
-                    self.resource_manager.get_resource(
-                        'scalr_workspace',
-                        consumers_data['workspace_name']
-                    ).add_attribute('remote_state_consumers', consumer_resources)
-                    ConsoleOutput.info(f"Updated state consumers for workspace '{scalr_id}'...")
-            except errors.MissingMappingError as e:
-                ConsoleOutput.warning(f"Unable to post-migrate state consumers. {e}")
-                continue
-            except RuntimeError as e:
-                ConsoleOutput.warning(e.args[0])
-                continue
-            except errors.APIError as e:
-                ConsoleOutput.error(f"Unable to update remote state consumers: {e}")
-                continue
+        if not self.args.skip_run_triggers:
+            self.migrate_run_triggers()
 
         return successful_workspaces, skipped_workspaces
 
+    def migrate_state_consumers(self, tfc_id: str, workspace_name: str, tfc_consumers: List[Dict]) -> None:
+        """
+        Allow the TFC remote state consumers of a workspace to read its state in Scalr. Both sides
+        may come from this run or from earlier ones, so a consumer migrated in a later wave is
+        added to a workspace migrated in an earlier one.
+        """
+        try:
+            scalr_id, _ = self.resolve_scalr_workspace(tfc_id)
+        except errors.MissingMappingError:
+            # The workspace itself is not in Scalr yet; its consumers are set when it is migrated.
+            return
+
+        consumer_ids = []
+        consumer_names = []
+        pending = []
+        for state_consumer in tfc_consumers:
+            consumer_name = (state_consumer.get("attributes") or {}).get("name", state_consumer["id"])
+            try:
+                consumer_id, consumer_name = self.resolve_scalr_workspace(state_consumer["id"])
+            except errors.MissingMappingError:
+                pending.append(consumer_name)
+                continue
+            consumer_ids.append(consumer_id)
+            consumer_names.append(consumer_name)
+
+        entry = self.report.workspaces.get(workspace_name)
+        if entry is not None:
+            entry["remote_state_consumers"] = consumer_names
+        if pending:
+            message = (
+                f"Remote state consumers of '{workspace_name}' not migrated yet, they are added when they are: "
+                f"{', '.join(pending)}"
+            )
+            ConsoleOutput.warning(message)
+            self.report.warn(message, entry)
+
+        if not consumer_ids:
+            return
+
+        try:
+            self.scalr.update_consumers(scalr_id, consumer_ids)
+        except errors.APIError as e:
+            ConsoleOutput.error(f"Unable to update remote state consumers: {e}")
+            self.report.warn(f"Unable to update remote state consumers: {e}", entry)
+            return
+
+        producer_reference = self.workspace_reference(workspace_name, scalr_id)
+        for consumer_id, consumer_name in zip(consumer_ids, consumer_names):
+            resource_name = f"{workspace_name}_{consumer_name}"
+            if self.resource_manager.has_resource("scalr_workspace_remote_state_consumer", resource_name):
+                continue
+            consumer_resource = TerraformResource("scalr_workspace_remote_state_consumer", resource_name, {
+                "workspace_id": producer_reference,
+                "consumer_id": self.workspace_reference(consumer_name, consumer_id),
+            })
+            consumer_resource.id = f"{scalr_id}/{consumer_id}"
+            consumer_resource.owner = consumer_name
+            self.resource_manager.add_resource(consumer_resource)
+        ConsoleOutput.info(f"Updated state consumers of workspace '{workspace_name}'")
+
+    def load_team_map(self) -> None:
+        """
+        --team-map: which Scalr team stands for each TFC team, and which Scalr roles each TFC access
+        level becomes. Nothing is guessed: a team or level the file does not map gets no access policy.
+        """
+        self.load_team_access()
+        path = self.args.team_map_file
+        if not path:
+            if self.team_access_rows is not None:
+                # The file names the Scalr teams and roles itself.
+                self.team_map = {"teams": {}, "access_levels": {}, "project_access_levels": {}, "overrides": [],
+                                 "project_access": "ignore", "from_file": False}
+                if any(row["scope"] == "project" for row in self.team_access_rows):
+                    ConsoleOutput.warning(
+                        f"The project rows of '{self.args.team_access_file}' are ignored: migrating project "
+                        f"access needs a --team-map with project_access"
+                    )
+            return
+        if not os.path.exists(path):
+            raise errors.InvalidInputError(f"Team map '{path}' does not exist")
+        try:
+            with open(path, 'r') as f:
+                document = json.load(f)
+        except json.JSONDecodeError as e:
+            raise errors.InvalidInputError(f"Team map '{path}' is not valid JSON: {e}")
+
+        if not isinstance(document, dict):
+            raise errors.InvalidInputError(f"Team map '{path}' must be a JSON object")
+
+        def role_lists(key: str) -> Dict[str, List[str]]:
+            levels = document.get(key) or {}
+            if not isinstance(levels, dict) or not all(isinstance(roles, list) for roles in levels.values()):
+                raise errors.InvalidInputError(f"'{key}' in team map '{path}' must map access levels to role lists")
+            return {level: [str(role) for role in roles] for level, roles in levels.items()}
+
+        teams = document.get("teams") or {}
+        if not isinstance(teams, dict):
+            raise errors.InvalidInputError(f"'teams' in team map '{path}' must map TFC teams to Scalr teams")
+
+        overrides = document.get("overrides") or []
+        for override in overrides:
+            if not isinstance(override, dict) or not override.get("team") or not isinstance(override.get("roles"), list):
+                raise errors.InvalidInputError(
+                    f"Every override in team map '{path}' needs a 'team' and a 'roles' list: {override}"
+                )
+
+        project_access = document.get("project_access", "ignore")
+        if project_access not in ("environment", "workspaces", "ignore"):
+            raise errors.InvalidInputError(
+                f"'project_access' in team map '{path}' must be 'environment', 'workspaces' or 'ignore'"
+            )
+        if project_access == "environment" and not self.args.tfc_project:
+            ConsoleOutput.warning(
+                "Team map sets project_access to 'environment', which needs --tfc-project: "
+                "project-level team access is not migrated in this run"
+            )
+
+        self.team_map = {
+            "teams": {str(k): v for k, v in teams.items() if not str(k).startswith('_')},
+            "access_levels": role_lists("access_levels"),
+            "project_access_levels": role_lists("project_access_levels"),
+            "overrides": overrides,
+            "project_access": project_access,
+            "from_file": True,
+        }
+        ConsoleOutput.info(f"Read team access mapping for {len(self.team_map['teams'])} team(s) from '{path}'")
+        if project_access == "ignore" and any(row["scope"] == "project" for row in self.team_access_rows or []):
+            ConsoleOutput.warning(
+                f"The project rows of '{self.args.team_access_file}' are ignored: the team map sets "
+                f"project_access to 'ignore'"
+            )
+
+    def get_tfc_team_name(self, team_id: str) -> str:
+        if self.tfc_team_names is None:
+            try:
+                self.tfc_team_names = {
+                    team["id"]: team["attributes"]["name"] for team in self.tfc.get_teams(self.args.tfc_organization)
+                }
+            except errors.APIError as e:
+                ConsoleOutput.warning(f"Unable to list TFC/E teams, teams cannot be matched by name: {e}")
+                self.tfc_team_names = {}
+        return self.tfc_team_names.get(team_id, team_id)
+
+    def load_team_access(self) -> None:
+        """
+        --team-access: a CSV or TSV file with the columns of the --inventory team-access table.
+        `scope` is `workspace` (default) or `project`; `scalr_team` and `roles` (Scalr role names
+        or ids, separated by ";") are optional and take precedence over the team map.
+        """
+        path = self.args.team_access_file
+        if not path:
+            return
+        rows = []
+        for number, row in enumerate(read_table(path, ["team"]), start=2):
+            scope = row.get("scope") or "workspace"
+            if scope not in ("workspace", "project"):
+                raise errors.InvalidInputError(f"'{path}' line {number}: scope must be 'workspace' or 'project'")
+            if not row.get(scope):
+                raise errors.InvalidInputError(f"'{path}' line {number}: a {scope} row needs the '{scope}' column")
+            rows.append({
+                "scope": scope,
+                "workspace": row.get("workspace", ""),
+                "project": row.get("project", ""),
+                "team": row["team"],
+                "access": row.get("access", ""),
+                "scalr_team": row.get("scalr_team") or None,
+                "roles": [role.strip() for role in re.split(r"[;,]", row.get("roles", "")) if role.strip()],
+            })
+        self.team_access_rows = rows
+        ConsoleOutput.info(f"Read {len(rows)} team access grant(s) from '{path}'")
+
+    def get_tfc_project_name(self, project_id: str) -> str:
+        if self.tfc_project_names is None:
+            self.tfc_project_names = {
+                project["id"]: project["attributes"]["name"]
+                for project in self.tfc.get_projects(self.args.tfc_organization)
+            }
+        return self.tfc_project_names.get(project_id, project_id)
+
+    def workspace_team_grants(self, tf_workspace: Dict) -> List[Dict]:
+        """The team access of a workspace, from --team-access or else from TFC: {team, access, ...}."""
+        name = tf_workspace["attributes"]["name"]
+        if self.team_access_rows is not None:
+            return [row for row in self.team_access_rows
+                    if row["scope"] == "workspace" and row["workspace"].lower() == name.lower()]
+        return [
+            {"team": self.get_tfc_team_name(item["relationships"]["team"]["data"]["id"]),
+             "access": item["attributes"]["access"]}
+            for item in self.tfc.get_team_workspaces(tf_workspace["id"])
+        ]
+
+    def get_project_team_access(self, project_id: str) -> List[Dict]:
+        """The team access of a TFC project, from --team-access or else from TFC: {team, access, ...}."""
+        if project_id not in self.tfc_project_team_access:
+            if self.team_access_rows is not None:
+                project_name = self.get_tfc_project_name(project_id)
+                grants = [row for row in self.team_access_rows
+                          if row["scope"] == "project" and row["project"] == project_name]
+            else:
+                grants = [
+                    {"team": self.get_tfc_team_name(item["relationships"]["team"]["data"]["id"]),
+                     "access": item["attributes"]["access"]}
+                    for item in self.tfc.get_team_projects(project_id)
+                ]
+            self.tfc_project_team_access[project_id] = grants
+        return self.tfc_project_team_access[project_id]
+
+    def plan_team_access(self, grant: Dict, workspace_name: Optional[str], levels_key: str) -> Dict:
+        """The access policy a team grant becomes, or the reason it cannot become one."""
+        team_name, access = grant["team"], grant["access"]
+        roles = grant.get("roles") or None
+        if roles is None:
+            for override in self.team_map["overrides"]:
+                if override["team"] != team_name:
+                    continue
+                if workspace_name and override.get("workspace") and \
+                        not matches_workspace_patterns(workspace_name, override["workspace"]):
+                    continue
+                roles = override["roles"]
+                break
+        if roles is None:
+            roles = self.team_map[levels_key].get(access)
+
+        scalr_team = grant.get("scalr_team") or self.team_map["teams"].get(team_name)
+        if not scalr_team and not self.team_map["from_file"]:
+            # --team-access without --team-map: the file names Scalr teams directly.
+            scalr_team = team_name
+        problem = None
+        if not scalr_team:
+            problem = f"TFC/E team '{team_name}' is not mapped to a Scalr team"
+        elif not roles:
+            problem = f"access level '{access}' of team '{team_name}' is not mapped to Scalr roles"
+
+        return {"tfc_team": team_name, "access": access, "team": scalr_team, "roles": roles or [],
+                "problem": problem}
+
+    def resolve_team_access(self, tf_workspace: Dict) -> List[Dict]:
+        """The access policies the team access of a workspace becomes (workspace scope)."""
+        workspace_name = tf_workspace["attributes"]["name"]
+        planned = [self.plan_team_access(grant, workspace_name, "access_levels")
+                   for grant in self.workspace_team_grants(tf_workspace)]
+
+        project = ((tf_workspace.get("relationships") or {}).get("project") or {}).get("data")
+        if self.team_map["project_access"] == "workspaces" and project:
+            for grant in self.get_project_team_access(project["id"]):
+                planned.append(self.plan_team_access(grant, workspace_name, "project_access_levels"))
+        return planned
+
+    def find_scalr_team_id(self, name: str) -> Optional[str]:
+        """The id of a Scalr team given by name or by id. An id resolves to itself."""
+        if name not in self.scalr_team_ids:
+            team = self.scalr.get_team_by_id(name) if SCALR_TEAM_ID.match(name) else None
+            team = team or self.scalr.find_team(name)
+            self.scalr_team_ids[name] = team["id"] if team else None
+        return self.scalr_team_ids[name]
+
+    def find_scalr_role_id(self, name: str) -> Optional[str]:
+        """The id of a Scalr role given by name or by id. An id resolves to itself."""
+        if name not in self.scalr_role_ids:
+            role = self.scalr.get_role_by_id(name) if SCALR_ROLE_ID.match(name) else None
+            role = role or self.scalr.find_role(name)
+            self.scalr_role_ids[name] = role["id"] if role else None
+        return self.scalr_role_ids[name]
+
+    def ensure_access_policy(self, planned: Dict, scope_type: str, scope_id: str, scope_reference,
+                             resource_name: str, owner: Optional[str], entry: Optional[Dict]) -> None:
+        """Create the access policy unless the team already has one on this scope."""
+        result = {"team": planned["team"], "tfc_team": planned["tfc_team"], "access": planned["access"],
+                  "roles": planned["roles"], "scope": scope_type, "action": None, "id": None}
+        if entry is not None:
+            entry["access_policies"].append(result)
+
+        if planned["problem"]:
+            result["action"] = "unmapped"
+            ConsoleOutput.warning(f"No access policy: {planned['problem']}")
+            self.report.warn(planned["problem"], entry)
+            return
+
+        team_id = self.find_scalr_team_id(planned["team"])
+        role_ids = [self.find_scalr_role_id(role) for role in planned["roles"]]
+        missing = ([f"team '{planned['team']}'"] if not team_id else []) + [
+            f"role '{role}'" for role, role_id in zip(planned["roles"], role_ids) if not role_id
+        ]
+        if missing:
+            result["action"] = "missing-in-scalr"
+            message = f"No access policy for TFC/E team '{planned['tfc_team']}': {', '.join(missing)} not found in Scalr"
+            ConsoleOutput.warning(message)
+            self.report.warn(message, entry)
+            return
+
+        scope_filter = "filter[workspace]" if scope_type == "workspaces" else "filter[environment]"
+        existing = self.scalr.list_access_policies({"filter[team]": team_id, scope_filter: scope_id})
+        if existing:
+            policy = existing[0]
+            existing_roles = {role["id"] for role in policy["relationships"]["roles"]["data"]}
+            result["id"] = policy["id"]
+            if existing_roles != set(role_ids):
+                # Someone set this up in Scalr already; leave their decision alone.
+                result["action"] = "exists-with-other-roles"
+                message = (f"Team '{planned['team']}' already has an access policy with other roles on this "
+                           f"{scope_type[:-1]}, left unchanged")
+                ConsoleOutput.warning(message)
+                self.report.warn(message, entry)
+                return
+            # Either generated by an earlier run, or made by hand: not taken over by generated code.
+            result["action"] = "exists"
+            return
+
+        policy_id = self.scalr.create_access_policy(team_id, scope_type, scope_id, role_ids)["data"]["id"]
+        result.update({"action": "created", "id": policy_id})
+        ConsoleOutput.success(f"Granted team '{planned['team']}' roles {', '.join(planned['roles'])}")
+
+        # A team or role given by id stays a literal id; one given by name becomes a data source.
+        if team_id == planned["team"]:
+            team_reference = team_id
+        else:
+            team_data = TerraformDataSource("scalr_iam_team", planned["team"], {"name": planned["team"]})
+            self.resource_manager.add_data_source(team_data)
+            team_reference = self.resource_manager.get_resource("scalr_iam_team", planned["team"]) or team_data
+        role_data = []
+        for role, role_id in zip(planned["roles"], role_ids):
+            if role_id == role:
+                role_data.append(role_id)
+                continue
+            data_source = TerraformDataSource("scalr_role", role, {"name": role})
+            self.resource_manager.add_data_source(data_source)
+            role_data.append(self.resource_manager.get_resource("scalr_role", role) or data_source)
+
+        policy_resource = TerraformResource("scalr_access_policy", resource_name, {
+            "subject": HCLObject({"type": "team", "id": team_reference}),
+            "scope": HCLObject({"type": scope_type[:-1], "id": scope_reference}),
+            "role_ids": role_data,
+        })
+        policy_resource.id = policy_id
+        policy_resource.owner = owner
+        self.resource_manager.add_resource(policy_resource)
+
+    def migrate_team_access(self, tf_workspace: Dict, workspace: AbstractTerraformResource) -> None:
+        workspace_name = tf_workspace["attributes"]["name"]
+        try:
+            planned_policies = self.resolve_team_access(tf_workspace)
+        except errors.APIError as e:
+            message = f"Unable to read the TFC/E team access of '{workspace_name}': {e}"
+            ConsoleOutput.warning(message)
+            self.report.warn(message)
+            return
+
+        reference = self.workspace_reference(workspace_name, workspace.id)
+        for planned in planned_policies:
+            self.ensure_access_policy(
+                planned, "workspaces", workspace.id, reference,
+                f"{workspace_name}_{planned['team'] or planned['tfc_team']}", workspace_name, self.report.current
+            )
+
+    def migrate_project_team_access(self, env: Dict, project_id: Optional[str]) -> None:
+        """project_access: environment — the TFC project's team access becomes environment access policies."""
+        if not project_id:
+            return
+        ConsoleOutput.section("Migrating project team access")
+        try:
+            grants = self.get_project_team_access(project_id)
+        except errors.APIError as e:
+            message = f"Unable to read the TFC/E team access of project '{self.args.tfc_project}': {e}"
+            ConsoleOutput.warning(message)
+            self.report.warnings.append(message)
+            return
+
+        reference = self.get_environment_resource_id() or env["id"]
+        entry = {"warnings": self.report.warnings, "access_policies": []}
+        for grant in grants:
+            planned = self.plan_team_access(grant, None, "project_access_levels")
+            self.ensure_access_policy(
+                planned, "environments", env["id"], reference,
+                f"{env['attributes']['name']}_{planned['team'] or planned['tfc_team']}", None, entry
+            )
+        self.report.environment_access_policies = entry["access_policies"]
+
+
+    def collect_run_triggers(self, tfc_workspace_ids: List[str]) -> Dict[Tuple[str, str], Tuple[str, str]]:
+        """
+        TFC run triggers touching the given workspaces, in both directions:
+        (upstream TFC id, downstream TFC id) -> (upstream name, downstream name).
+        Outbound triggers matter when the downstream workspace was migrated by an earlier wave.
+        """
+        pairs: Dict[Tuple[str, str], Tuple[str, str]] = {}
+        for tfc_id in tfc_workspace_ids:
+            name = self.get_tfc_workspace(tfc_id)["attributes"]["name"]
+            for trigger in self.tfc.get_run_triggers(tfc_id, "inbound"):
+                upstream = trigger["relationships"]["sourceable"]["data"]["id"]
+                pairs[(upstream, tfc_id)] = (trigger["attributes"].get("sourceable-name", upstream), name)
+            for trigger in self.tfc.get_run_triggers(tfc_id, "outbound"):
+                downstream = trigger["relationships"]["workspace"]["data"]["id"]
+                pairs[(tfc_id, downstream)] = (name, trigger["attributes"].get("workspace-name", downstream))
+        return pairs
+
+    def migrate_run_triggers(self) -> None:
+        """Recreate the TFC run triggers of the workspaces in this run whose both ends are in Scalr."""
+        in_scope = [entry["tfc_id"] for entry in self.report.workspaces.values()
+                    if entry["status"] in (run_report.STATUS_MIGRATED, run_report.STATUS_EXISTING)]
+        try:
+            pairs = self.collect_run_triggers(in_scope)
+        except errors.APIError as e:
+            message = f"Unable to read TFC/E run triggers: {e}"
+            ConsoleOutput.warning(message)
+            self.report.warnings.append(message)
+            return
+        if not pairs:
+            return
+
+        ConsoleOutput.section("Migrating run triggers")
+        for (upstream_tfc_id, downstream_tfc_id), (upstream_name, downstream_name) in sorted(
+                pairs.items(), key=lambda item: item[1]):
+            result = {"upstream": upstream_name, "downstream": downstream_name, "action": None, "id": None}
+            entries = [entry for entry in (self.report.workspaces.get(upstream_name),
+                                           self.report.workspaces.get(downstream_name)) if entry is not None]
+            for entry in entries:
+                entry["run_triggers"].append(result)
+
+            try:
+                upstream_id, upstream_name = self.resolve_scalr_workspace(upstream_tfc_id)
+                downstream_id, downstream_name = self.resolve_scalr_workspace(downstream_tfc_id)
+            except errors.MissingMappingError:
+                # Created by the run that migrates the other end, which collects it as well.
+                result["action"] = "pending"
+                ConsoleOutput.info(
+                    f"Run trigger {upstream_name} → {downstream_name} waits for both workspaces to be migrated"
+                )
+                continue
+
+            # Scalr cannot list run triggers, so the generated code is what tells a re-run that an
+            # earlier run of this environment created the trigger already.
+            if self.resource_manager.has_resource("scalr_run_trigger", f"{upstream_name}_{downstream_name}"):
+                result["action"] = "exists"
+                continue
+
+            try:
+                trigger_id = self.scalr.create_run_trigger(upstream_id, downstream_id)["data"]["id"]
+            except errors.APIError as e:
+                if e.code != 422:
+                    result["action"] = "failed"
+                    message = f"Unable to create run trigger {upstream_name} → {downstream_name}: {e}"
+                    ConsoleOutput.error(message)
+                    for entry in entries:
+                        self.report.warn(message, entry)
+                    continue
+                # Created by an earlier run (and in its generated code) or by hand.
+                result["action"] = "exists"
+                continue
+
+            result.update({"action": "created", "id": trigger_id})
+            ConsoleOutput.success(f"Created run trigger {upstream_name} → {downstream_name}")
+
+            trigger_resource = TerraformResource("scalr_run_trigger", f"{upstream_name}_{downstream_name}", {
+                "upstream_id": self.workspace_reference(upstream_name, upstream_id),
+                "downstream_id": self.workspace_reference(downstream_name, downstream_id),
+            })
+            trigger_resource.id = trigger_id
+            trigger_resource.owner = downstream_name
+            self.resource_manager.add_resource(trigger_resource)

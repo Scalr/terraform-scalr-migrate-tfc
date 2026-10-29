@@ -2,6 +2,100 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+Engine changes that let a script, a CI pipeline or an AI agent drive a migration in waves: every input is a file,
+every outcome is machine-readable, and every run can be previewed and checked.
+
+### Added
+
+- `--workspaces-file FILE`: the exact names of the workspaces to migrate, one per line (`#` comments allowed), so a
+  migration wave is a reviewable file rather than a glob. Combined with `-w`, a workspace must match both; names that
+  TFC/E does not list are reported.
+- A JSON report of every run, in `generated-terraform/<environment>/reports/` or `--report-file`: per workspace its
+  status (`migrated`, `existing`, `skipped`, `failed` and the error), Scalr id, state serials, every variable key with
+  what happened to it (`created`, `exists`, `skipped` and why, sensitive values `recovered`, `scheduled` or
+  `unrecovered`), provider configuration, agent pool, remote state consumers, access policies, run triggers and TFC/E
+  lock; per variable set what was created, updated, linked or left unrecovered. Values of variables and tokens are
+  never written.
+- `generated-terraform/workspace-map.json`: TFC/E workspace → Scalr workspace (hostname, environment id, workspace id),
+  merged across runs and environments. Runs use it to resolve workspaces migrated by earlier waves, and it is the input
+  for repointing `terraform_remote_state` / `tfe_outputs` readers at Scalr.
+- `--inventory`: exports the workspaces in scope to `migration-inventory/` (`--inventory-dir`) — `workspaces.csv`,
+  `team-access.csv` (workspace and project grants with custom permissions), `state-consumers.csv` (producer and
+  consumer with their VCS repository and working directory, and the producer's sharing mode), `run-triggers.csv`,
+  `inventory.json`, and a `team-map.example.json` listing every team and access level found. Needs TFC/E credentials
+  only; variable values are not exported.
+- `--dry-run`: reports what a migration with the same arguments would create, reuse, recover, skip or leave pending,
+  and lists blockers (missing VCS provider, provider configuration or agent pool, VCS-driven workspace without
+  `--vcs-name`, missing project). Nothing is written to TFC/E or Scalr; exits 1 when there are blockers.
+- `--team-map FILE`: TFC/E team access is migrated to Scalr access policies. The JSON file maps TFC/E teams to existing
+  Scalr teams and access levels to Scalr role names, with per-workspace `overrides`; `project_access` turns project
+  grants into environment policies (`environment`, with `--tfc-project`) or workspace policies (`workspaces`). Unmapped
+  teams or levels, and teams or roles missing in Scalr, are reported and get no policy. A team that already has a
+  policy on the workspace is left alone. Created policies are written to the generated code as `scalr_access_policy`.
+- `--team-access FILE`: the team access to grant comes from a CSV or TSV file with the columns of the inventory's
+  `team-access` table instead of from TFC/E, so the exported table can be reviewed, edited and passed back. Optional
+  `scalr_team` and `roles` columns take precedence over the team map; without `--team-map`, the file names Scalr teams
+  and roles directly.
+- Scalr roles and teams can be given by id (`role-...`, `team-...`) as well as by name, in the team map and in
+  `--team-access`; the generated code keeps the id instead of a data source.
+- `--workspace-defaults FILE`: Scalr workspace settings TFC/E has no counterpart for (`type`, `ssh_key_id`,
+  `auto_queue_runs`, `run_operation_timeout`, `force_latest_run`, `remote_backend`, `var_files`), with overrides by
+  workspace pattern, applied to every workspace a run creates, in Scalr and in the generated code. `--dry-run`
+  reports them and blocks on an SSH key that does not exist.
+- `--inventory-format tsv`: the inventory tables are written as TSV. Files read by the migrator are CSV or TSV by
+  extension.
+- Run triggers are migrated (`scalr_run_trigger`), in both directions: a trigger whose other end is not in Scalr yet is
+  reported as pending and created by the run that migrates it. `--skip-run-triggers` disables it.
+- `--layout per-workspace`: the generated code puts each workspace with its variables, access policies and run triggers
+  in its own `ws_<name>.tf`, and the shared blocks in `main.tf`. Re-runs read every `.tf` file of the directory, in
+  either layout.
+- `--verify`: compares the workspaces of the workspace map in scope with TFC/E — Scalr workspace exists, Scalr state
+  serial not behind TFC/E, TFC/E workspace locked, variable keys, remote state consumers and (with `--team-map`) access
+  policies present — and writes a report; exits 1 on any mismatch. `--verify-plan` also queues a plan-only run in every
+  VCS-driven workspace and reports whether it proposes changes.
+
+### Changed
+
+- The migrator exits with code 2 when some workspaces failed and the rest were migrated (it exited 0 before).
+  `migrate.sh` still runs the post-migration steps in that case, so what was created gets imported, then exits 2.
+- Remote state consumers are resolved through the workspace map as well, so a consumer migrated in a later wave is
+  allowed to read the state of a workspace migrated in an earlier one.
+- Generated code: state sharing is `remote_state_sharing` on `scalr_workspace`, and each explicit remote state consumer
+  is a `scalr_workspace_remote_state_consumer` resource (with its import), instead of the deprecated
+  `remote_state_consumers` attribute. A consumer migrated in a later wave no longer needs a change to the block an
+  earlier wave wrote. The provider block requires `scalr/scalr` >= 3.20.0.
+- `imports.tf` keeps the import blocks of earlier runs of the same environment instead of being rewritten, so waves
+  migrated without applying the code in between are all imported by the next apply.
+- A re-run no longer starts a TFC/E run to recover sensitive environment variables that are already in Scalr.
+- Generated code includes variable sets: `scalr_var_set` (from the run that creates the set; a set that is not shared
+  with the whole account ignores changes to `environments`, which every run using it extends), its variables as
+  `scalr_variable` with `var_set_id`, and workspace links as `scalr_workspace_var_set`, all with import blocks.
+- Sensitive variables are no longer written to the generated code: their values ended up in plain text in `.tf`
+  files. They are created in Scalr as before, and the run report says they are not in the code. (Keeping them in the
+  code without a value is not safe: the provider imports a sensitive variable without its value and overwrites it
+  with an empty string on the first apply.)
+- Workspaces and variables without a working directory or description are created with an empty string rather than
+  null, so that a plan right after the import shows no change.
+
+### Fixed
+
+- `migrate.sh` reported success for a failed migration (the exit code was read after `deactivate`), and with `set -e`
+  stopped before its own error message.
+- A failure in post-migrating remote state consumers no longer aborts the run when the producer workspace is not in
+  the generated code.
+- Recovering sensitive Terraform variables from a plan file no longer fails when the code declares a sensitive variable
+  whose value does not come from the workspace itself (e.g. from a variable set or a default).
+- HCL variables were generated as a bare expression (`value = { a = "b" }`), which the provider rejects; values are
+  now quoted strings. String values in the generated code are escaped, so quotes, backslashes and `${` no longer
+  break it or get interpolated.
+- When `terraform init` fails while recovering sensitive environment variables, the plan is no longer started anyway,
+  and the variables are reported as unrecovered.
+- A workspace that failed to migrate is no longer listed among the skipped ones as well in the summary.
+- A variable created for a workspace that already existed in Scalr referenced a data source that is not in the
+  generated code; it now uses the workspace id.
+
 ## [0.5.0] - 2026-09-23
 
 ### Added

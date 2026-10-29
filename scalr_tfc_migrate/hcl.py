@@ -8,6 +8,14 @@ def transform_name(name: str) -> str:
     return f"r_{name.lower().translate(str.maketrans({' ': '_', '-': '_'}))}"
 
 
+def hcl_string(value: str) -> str:
+    """
+    A quoted HCL string literal. Quotes, backslashes and newlines are escaped, and `${` / `%{`
+    are doubled, so Terraform does not read a value as a template.
+    """
+    return json.dumps(value, ensure_ascii=False).replace("${", "$${").replace("%{", "%%{")
+
+
 class HClAttribute:
     def __init__(self, value, encode_required: bool = False) -> None:
         self.hcl_value = value
@@ -40,6 +48,8 @@ class AbstractTerraformResource:
         self.attributes = attributes
         self.id = None
         self.hcl_resource_type: str = hcl_resource_type
+        # Name of the workspace this block belongs to; --layout per-workspace groups blocks by it.
+        self.owner: Optional[str] = None
 
     def _render_attribute(self, attrs: list, key, value, ident: Optional[int] = None):
         if not ident:
@@ -64,15 +74,7 @@ class AbstractTerraformResource:
                         attrs.append((" " * (ident + 2)) + f'{repo_key} = {json.dumps(repo_value)}')
             attrs.append("  }")
         elif isinstance(value, str):
-            # Check if the value contains newlines and use EOT format if it does
-            if '\n' in value:
-                # Split the value into lines and indent each line
-                lines = value.split('\n')
-                attrs.append((" " * ident) + f'{key} = <<EOT')
-                attrs.extend((" " * ident) + f'{line}' for line in lines)
-                attrs.append((" " * ident) + f'EOT')
-            else:
-                attrs.append((" " * ident) + f'{key} = "{value}"')
+            attrs.append((" " * ident) + f'{key} = {hcl_string(value)}')
         elif isinstance(value, bool):
             attrs.append((" " * ident) + f'{key} = {str(value).lower()}')
         elif isinstance(value, dict):
@@ -81,7 +83,7 @@ class AbstractTerraformResource:
             attrs.append((" " * ident) + f'{key} = [')
             for v in value:
                 if isinstance(v, str):
-                    attrs.append(f'"{v}",')
+                    attrs.append((" " * (ident + 2)) + f'{hcl_string(v)},')
                 elif isinstance(v, AbstractTerraformResource):
                     attrs.append((" " * (ident + 2)) + f'{v.get_address()},')
             attrs.append((" " * ident) + ']')

@@ -107,14 +107,58 @@ class TFCClient(APIClient):
     def get_organization(self, org_name: str) -> Dict:
         return self.get(f"organizations/{org_name}")
 
-    def get_workspaces(self, org_name: str, page: int = 1, project_id: Optional[str] = None) -> Dict:
+    def get_workspaces(self, org_name: str, page: int = 1, project_id: Optional[str] = None,
+                       include: Optional[str] = None) -> Dict:
         filters = {
             "page[size]": 100,
             "page[number]": page,
         }
         if project_id:
             filters["filter[project][id]"] = project_id
+        if include:
+            filters["include"] = include
         return self.get(f"organizations/{org_name}/workspaces", filters)
+
+    def get_all(self, route: str, filters: Optional[Dict] = None) -> List[Dict]:
+        """Every item of a paginated listing."""
+        items: List[Dict] = []
+        page = 1
+        while True:
+            response = self.get(route, {**(filters or {}), "page[size]": 100, "page[number]": page})
+            items.extend(response.get("data", []))
+            next_page = response.get("meta", {}).get("pagination", {}).get("next-page")
+            if not next_page:
+                return items
+            page = next_page
+
+    def get_projects(self, org_name: str) -> List[Dict]:
+        return self.get_all(f"organizations/{org_name}/projects")
+
+    def get_teams(self, org_name: str) -> List[Dict]:
+        return self.get_all(f"organizations/{org_name}/teams")
+
+    def get_team_workspaces(self, workspace_id: str) -> List[Dict]:
+        """Team access of a workspace: one entry per team, with its access level and custom permissions."""
+        return self.get_all("team-workspaces", {"filter[workspace][id]": workspace_id})
+
+    def get_team_projects(self, project_id: str) -> List[Dict]:
+        return self.get_all("team-projects", {"filter[project][id]": project_id})
+
+    def get_run_triggers(self, workspace_id: str, trigger_type: str = "inbound") -> List[Dict]:
+        """`inbound`: the workspaces that trigger this one; `outbound`: the workspaces this one triggers."""
+        return self.get_all(f"workspaces/{workspace_id}/run-triggers", {"filter[run-trigger][type]": trigger_type})
+
+    def get_remote_state_consumers(self, tf_workspace: Dict) -> List[Dict]:
+        """
+        The workspaces allowed to read this workspace's state. Empty when the state is shared with the
+        whole organization (`global-remote-state`), which the workspace attributes carry instead.
+        """
+        if tf_workspace["attributes"].get("global-remote-state", False):
+            return []
+        state_consumers = (tf_workspace.get("relationships") or {}).get("remote-state-consumers")
+        if not state_consumers or not (state_consumers.get("links") or {}).get("related"):
+            return []
+        return self.get_by_short_url(state_consumers["links"]["related"]).get("data") or []
 
     def get_project(self, org_name: str, project_name: str) -> Optional[Dict]:
         try:
@@ -674,3 +718,94 @@ class ScalrClient(APIClient):
         except errors.APIError as e:
             if e.code != 404:
                 raise e
+
+    def get_workspace_by_id(self, workspace_id: str) -> Optional[Dict]:
+        try:
+            return self.get(f"workspaces/{workspace_id}")["data"]
+        except errors.APIError as e:
+            if e.code != 404:
+                raise e
+
+    def get_workspace_variables(self, workspace_id: str) -> List[Dict]:
+        variables: List[Dict] = []
+        page = 1
+        while True:
+            response = self.get("vars", {"filter[workspace]": workspace_id, "page[size]": 100, "page[number]": page})
+            variables.extend(response.get("data", []))
+            next_page = response.get("meta", {}).get("pagination", {}).get("next-page")
+            if not next_page:
+                return variables
+            page = next_page
+
+    def find_team(self, name: str) -> Optional[Dict]:
+        teams = self.get("teams", {"filter[name]": name})["data"]
+        return next((team for team in teams if team["attributes"]["name"] == name), None)
+
+    def find_role(self, name: str) -> Optional[Dict]:
+        roles = self.get("roles", {"filter[name]": name})["data"]
+        return next((role for role in roles if role["attributes"]["name"] == name), None)
+
+    def _get_by_id(self, route: str) -> Optional[Dict]:
+        try:
+            return self.get(route)["data"]
+        except errors.APIError as e:
+            if e.code != 404:
+                raise e
+
+    def get_team_by_id(self, team_id: str) -> Optional[Dict]:
+        return self._get_by_id(f"teams/{team_id}")
+
+    def get_role_by_id(self, role_id: str) -> Optional[Dict]:
+        return self._get_by_id(f"roles/{role_id}")
+
+    def get_ssh_key(self, ssh_key_id: str) -> Optional[Dict]:
+        return self._get_by_id(f"ssh-keys/{ssh_key_id}")
+
+    def link_ssh_key(self, workspace_id: str, ssh_key_id: str) -> Dict:
+        # Not a JSON:API document: the endpoint takes a plain object.
+        url = f"https://{self.hostname}{self.api_version}workspaces/{workspace_id}/ssh-key-links"
+        headers = {**self.headers, "Content-Type": "application/json"}
+        return self.make_request(url, method="POST", data={"ssh-key": ssh_key_id}, headers=headers)
+
+    def list_access_policies(self, filters: Dict) -> List[Dict]:
+        return self.get("access-policies", {**filters, "page[size]": 100})["data"]
+
+    def create_access_policy(self, team_id: str, scope_type: str, scope_id: str, role_ids: List[str]) -> Dict:
+        """`scope_type` is `workspaces` or `environments`."""
+        relationship = "workspace" if scope_type == "workspaces" else "environment"
+        data = {
+            "data": {
+                "type": "access-policies",
+                "relationships": {
+                    "team": {"data": {"type": "teams", "id": team_id}},
+                    relationship: {"data": {"type": scope_type, "id": scope_id}},
+                    "roles": {"data": [{"type": "roles", "id": role_id} for role_id in role_ids]},
+                },
+            }
+        }
+        return self.post("access-policies", data)
+
+    def create_run_trigger(self, upstream_id: str, downstream_id: str) -> Dict:
+        data = {
+            "data": {
+                "type": "run-triggers",
+                "relationships": {
+                    "upstream": {"data": {"type": "workspaces", "id": upstream_id}},
+                    "downstream": {"data": {"type": "workspaces", "id": downstream_id}},
+                },
+            }
+        }
+        return self.post("run-triggers", data)
+
+    def create_plan_only_run(self, workspace_id: str, message: str) -> Dict:
+        data = {
+            "data": {
+                "type": "runs",
+                "attributes": {"is-dry": True, "message": message},
+                "relationships": {"workspace": {"data": {"type": "workspaces", "id": workspace_id}}},
+            }
+        }
+        return self.post("runs", data)
+
+    def get_run(self, run_id: str) -> Dict:
+        return self.get(f"runs/{run_id}")["data"]
