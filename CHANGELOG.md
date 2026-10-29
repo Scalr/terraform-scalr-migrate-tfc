@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-## [v0.6.0]
+## [0.6.0]
 
 Engine changes that let a script, a CI pipeline or an AI agent drive a migration in waves: every input is a file,
 every outcome is machine-readable, and every run can be previewed and checked.
