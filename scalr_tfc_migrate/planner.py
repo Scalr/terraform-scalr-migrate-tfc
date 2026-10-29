@@ -114,6 +114,10 @@ class MigrationPlanner:
             except errors.MissingDataError as e:
                 self.report.block(str(e))
 
+        for ssh_key_id in service.workspace_defaults.ssh_key_ids():
+            if not self.scalr.get_ssh_key(ssh_key_id):
+                self.report.block(f"SSH key '{ssh_key_id}' from --workspace-defaults does not exist in Scalr")
+
     def plan_workspace(self, tf_workspace: Dict, env: Optional[Dict]) -> None:
         name = tf_workspace["attributes"]["name"]
         ConsoleOutput.info(f"Planning workspace '{name}'...")
@@ -157,6 +161,7 @@ class MigrationPlanner:
         entry["terraform_version"] = service.enforce_max_version(
             attributes.get("terraform-version") or "1.6.0", "Workspace"
         )
+        entry["workspace_defaults"] = service.workspace_defaults.for_workspace(name)
 
         if attributes.get("vcs-repo") and not self.args.vcs_name:
             message = "VCS-driven workspace, --vcs-name is required"

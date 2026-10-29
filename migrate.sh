@@ -173,6 +173,8 @@ show_help() {
     echo "  --opentofu-version VERSION        If Opentofu is used, a version to migrate workspaces with Terraform => 1.6.0. Default: latest Opentofu version"
     echo "  --credentials-set-name NAME       The name of a variable set containing the Scalr credentials to perform migration of the sensitive environment variables. Default: Scalr-Creds"
     echo "  --team-map FILE                   JSON mapping of TFC/E teams and access levels to Scalr teams and roles"
+    echo "  --team-access FILE                CSV or TSV list of the team access to grant, instead of reading it from TFC/E"
+    echo "  --workspace-defaults FILE         JSON of Scalr workspace settings (type, ssh_key_id, ...) for new workspaces"
     echo "  --skip-run-triggers               Skip migration of TFC/E run triggers"
     echo "  --layout single|per-workspace     Generated code in main.tf (default) or one ws_<name>.tf file per workspace"
     echo "  --report-file FILE                Where to write the JSON report of the run"
@@ -180,6 +182,7 @@ show_help() {
     echo "Read-only modes (no post-migration steps):"
     echo "  --inventory                       Export TFC/E workspaces, team access, state consumers and run triggers to CSV/JSON"
     echo "  --inventory-dir DIR               Directory for the --inventory files (default: migration-inventory)"
+    echo "  --inventory-format csv|tsv        Format of the --inventory tables (default: csv)"
     echo "  --dry-run                         Report what a migration would create, reuse or skip, without changing anything"
     echo "  --verify                          Check migrated workspaces against TFC/E"
     echo "  --verify-plan                     With --verify, also queue a plan-only run per workspace (creates runs)"
@@ -217,7 +220,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         # Handle space-separated format
-        --scalr-hostname|--scalr-token|--scalr-environment|--tfc-hostname|--tfc-token|--tfc-organization|--tfc-project|--vcs-name|--pc-name|--pc-map|--workspaces|--management-env-name|--management-workspace-name|--skip-variables|--agent-pool-name|--opentofu-version|--credentials-set-name|--workspaces-file|--report-file|--inventory-dir|--team-map|--layout)
+        --scalr-hostname|--scalr-token|--scalr-environment|--tfc-hostname|--tfc-token|--tfc-organization|--tfc-project|--vcs-name|--pc-name|--pc-map|--workspaces|--management-env-name|--management-workspace-name|--skip-variables|--agent-pool-name|--opentofu-version|--credentials-set-name|--workspaces-file|--report-file|--inventory-dir|--inventory-format|--team-map|--team-access|--workspace-defaults|--layout)
             param="${1#--}"  # Remove leading --
             env_var=$(echo "$param" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
             case $1 in
@@ -326,7 +329,10 @@ CMD="$CMD --tfc-organization \"$TFC_ORGANIZATION\""
 [ -n "$WORKSPACES_FILE" ] && CMD="$CMD --workspaces-file \"$WORKSPACES_FILE\""
 [ -n "$REPORT_FILE" ] && CMD="$CMD --report-file \"$REPORT_FILE\""
 [ -n "$INVENTORY_DIR" ] && CMD="$CMD --inventory-dir \"$INVENTORY_DIR\""
+[ -n "$INVENTORY_FORMAT" ] && CMD="$CMD --inventory-format \"$INVENTORY_FORMAT\""
 [ -n "$TEAM_MAP" ] && CMD="$CMD --team-map \"$TEAM_MAP\""
+[ -n "$TEAM_ACCESS" ] && CMD="$CMD --team-access \"$TEAM_ACCESS\""
+[ -n "$WORKSPACE_DEFAULTS" ] && CMD="$CMD --workspace-defaults \"$WORKSPACE_DEFAULTS\""
 [ -n "$LAYOUT" ] && CMD="$CMD --layout \"$LAYOUT\""
 [ "$SKIP_RUN_TRIGGERS" = true ] && CMD="$CMD --skip-run-triggers"
 [ "$INVENTORY" = true ] && CMD="$CMD --inventory"

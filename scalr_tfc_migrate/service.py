@@ -4,6 +4,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -29,7 +30,14 @@ from scalr_tfc_migrate.hcl import (
     TerraformResource,
 )
 from scalr_tfc_migrate.resource_manager import ResourceManager
+from scalr_tfc_migrate.tables import read_table
 from scalr_tfc_migrate.triggers import handle_trigger_patterns
+from scalr_tfc_migrate.workspace_defaults import WorkspaceDefaults
+
+
+# A team or role given as a Scalr id rather than a name, e.g. role-t67mjtmauu7ve4s
+SCALR_TEAM_ID = re.compile(r"^team-[a-z0-9]+$")
+SCALR_ROLE_ID = re.compile(r"^role-[a-z0-9]+$")
 
 
 class MigrationService:
@@ -71,9 +79,13 @@ class MigrationService:
         # --team-map: TFC team access → Scalr access policies
         self.team_map: Optional[Dict] = None
         self.tfc_team_names: Optional[Dict[str, str]] = None  # TFC team id -> name
-        self.tfc_project_team_access: Dict[str, List[Dict]] = {}  # TFC project id -> team-projects
+        self.tfc_project_team_access: Dict[str, List[Dict]] = {}  # TFC project id -> team grants
+        self.tfc_project_names: Optional[Dict[str, str]] = None  # TFC project id -> name
+        # --team-access: the team grants to migrate, instead of the ones read from TFC
+        self.team_access_rows: Optional[List[Dict]] = None
         self.scalr_team_ids: Dict[str, Optional[str]] = {}  # Scalr team name -> id
         self.scalr_role_ids: Dict[str, Optional[str]] = {}  # Scalr role name -> id
+        self.workspace_defaults: WorkspaceDefaults = WorkspaceDefaults(args.workspace_defaults_file)
 
         self.load_account_id()
         self.load_provider_configuration_map()
@@ -548,6 +560,9 @@ class MigrationService:
             "iac-platform": platform,
         }
 
+        defaults = {} if is_management_workspace else self.workspace_defaults.for_workspace(attributes["name"])
+        workspace_attrs.update(WorkspaceDefaults.api_attributes(defaults))
+
         vcs_id = None
         branch = None
         trigger_patterns = None
@@ -609,6 +624,18 @@ class MigrationService:
 
         ConsoleOutput.success(f"Created workspace '{attributes['name']}'")
 
+        ssh_key_id = defaults.get("ssh_key_id")
+        if ssh_key_id:
+            try:
+                self.scalr.link_ssh_key(response["data"]["id"], ssh_key_id)
+                ConsoleOutput.info(f"Linked SSH key: {ssh_key_id}")
+            except errors.APIError as e:
+                # The workspace exists now; a re-run would reuse it and not come back here.
+                message = f"Unable to link SSH key '{ssh_key_id}', link it by hand: {e}"
+                ConsoleOutput.warning(message)
+                self.report.warn(message)
+                ssh_key_id = None
+
         if pc_id:
             # A provider configuration that is not shared has to allow this environment.
             self.grant_environment_access(configuration, env_id)
@@ -626,6 +653,9 @@ class MigrationService:
             "deletion_protection_enabled": not self.args.disable_deletion_protection,
             "iac_platform": platform,
         }
+        resource_attributes.update({key: value for key, value in defaults.items() if key != "ssh_key_id"})
+        if ssh_key_id:
+            resource_attributes["ssh_key_id"] = ssh_key_id
 
         if global_remote_state:
             resource_attributes["remote_state_consumers"] = HClAttribute(["*"])
@@ -672,6 +702,9 @@ class MigrationService:
                     "terraform_version": terraform_version,
                     "provider_configuration": pc_name if pc_id else None,
                     "agent_pool": agent_pool_name_for_terraform,
+                    # What was applied: an SSH key that failed to link is left out.
+                    "workspace_defaults": {key: value for key, value in defaults.items()
+                                           if key != "ssh_key_id" or ssh_key_id},
                 })
 
         return workspace_resource
@@ -1970,8 +2003,18 @@ class MigrationService:
         --team-map: which Scalr team stands for each TFC team, and which Scalr roles each TFC access
         level becomes. Nothing is guessed: a team or level the file does not map gets no access policy.
         """
+        self.load_team_access()
         path = self.args.team_map_file
         if not path:
+            if self.team_access_rows is not None:
+                # The file names the Scalr teams and roles itself.
+                self.team_map = {"teams": {}, "access_levels": {}, "project_access_levels": {}, "overrides": [],
+                                 "project_access": "ignore", "from_file": False}
+                if any(row["scope"] == "project" for row in self.team_access_rows):
+                    ConsoleOutput.warning(
+                        f"The project rows of '{self.args.team_access_file}' are ignored: migrating project "
+                        f"access needs a --team-map with project_access"
+                    )
             return
         if not os.path.exists(path):
             raise errors.InvalidInputError(f"Team map '{path}' does not exist")
@@ -2018,8 +2061,14 @@ class MigrationService:
             "project_access_levels": role_lists("project_access_levels"),
             "overrides": overrides,
             "project_access": project_access,
+            "from_file": True,
         }
         ConsoleOutput.info(f"Read team access mapping for {len(self.team_map['teams'])} team(s) from '{path}'")
+        if project_access == "ignore" and any(row["scope"] == "project" for row in self.team_access_rows or []):
+            ConsoleOutput.warning(
+                f"The project rows of '{self.args.team_access_file}' are ignored: the team map sets "
+                f"project_access to 'ignore'"
+            )
 
     def get_tfc_team_name(self, team_id: str) -> str:
         if self.tfc_team_names is None:
@@ -2032,65 +2081,124 @@ class MigrationService:
                 self.tfc_team_names = {}
         return self.tfc_team_names.get(team_id, team_id)
 
+    def load_team_access(self) -> None:
+        """
+        --team-access: a CSV or TSV file with the columns of the --inventory team-access table.
+        `scope` is `workspace` (default) or `project`; `scalr_team` and `roles` (Scalr role names
+        or ids, separated by ";") are optional and take precedence over the team map.
+        """
+        path = self.args.team_access_file
+        if not path:
+            return
+        rows = []
+        for number, row in enumerate(read_table(path, ["team"]), start=2):
+            scope = row.get("scope") or "workspace"
+            if scope not in ("workspace", "project"):
+                raise errors.InvalidInputError(f"'{path}' line {number}: scope must be 'workspace' or 'project'")
+            if not row.get(scope):
+                raise errors.InvalidInputError(f"'{path}' line {number}: a {scope} row needs the '{scope}' column")
+            rows.append({
+                "scope": scope,
+                "workspace": row.get("workspace", ""),
+                "project": row.get("project", ""),
+                "team": row["team"],
+                "access": row.get("access", ""),
+                "scalr_team": row.get("scalr_team") or None,
+                "roles": [role.strip() for role in re.split(r"[;,]", row.get("roles", "")) if role.strip()],
+            })
+        self.team_access_rows = rows
+        ConsoleOutput.info(f"Read {len(rows)} team access grant(s) from '{path}'")
+
+    def get_tfc_project_name(self, project_id: str) -> str:
+        if self.tfc_project_names is None:
+            self.tfc_project_names = {
+                project["id"]: project["attributes"]["name"]
+                for project in self.tfc.get_projects(self.args.tfc_organization)
+            }
+        return self.tfc_project_names.get(project_id, project_id)
+
+    def workspace_team_grants(self, tf_workspace: Dict) -> List[Dict]:
+        """The team access of a workspace, from --team-access or else from TFC: {team, access, ...}."""
+        name = tf_workspace["attributes"]["name"]
+        if self.team_access_rows is not None:
+            return [row for row in self.team_access_rows
+                    if row["scope"] == "workspace" and row["workspace"].lower() == name.lower()]
+        return [
+            {"team": self.get_tfc_team_name(item["relationships"]["team"]["data"]["id"]),
+             "access": item["attributes"]["access"]}
+            for item in self.tfc.get_team_workspaces(tf_workspace["id"])
+        ]
+
     def get_project_team_access(self, project_id: str) -> List[Dict]:
+        """The team access of a TFC project, from --team-access or else from TFC: {team, access, ...}."""
         if project_id not in self.tfc_project_team_access:
-            self.tfc_project_team_access[project_id] = self.tfc.get_team_projects(project_id)
+            if self.team_access_rows is not None:
+                project_name = self.get_tfc_project_name(project_id)
+                grants = [row for row in self.team_access_rows
+                          if row["scope"] == "project" and row["project"] == project_name]
+            else:
+                grants = [
+                    {"team": self.get_tfc_team_name(item["relationships"]["team"]["data"]["id"]),
+                     "access": item["attributes"]["access"]}
+                    for item in self.tfc.get_team_projects(project_id)
+                ]
+            self.tfc_project_team_access[project_id] = grants
         return self.tfc_project_team_access[project_id]
 
-    def plan_team_access(self, team_name: str, access: str, workspace_name: Optional[str],
-                         levels_key: str) -> Dict:
-        """The access policy a TFC grant becomes, or the reason it cannot become one."""
-        roles = None
-        for override in self.team_map["overrides"]:
-            if override["team"] != team_name:
-                continue
-            if workspace_name and override.get("workspace") and \
-                    not matches_workspace_patterns(workspace_name, override["workspace"]):
-                continue
-            roles = override["roles"]
-            break
+    def plan_team_access(self, grant: Dict, workspace_name: Optional[str], levels_key: str) -> Dict:
+        """The access policy a team grant becomes, or the reason it cannot become one."""
+        team_name, access = grant["team"], grant["access"]
+        roles = grant.get("roles") or None
+        if roles is None:
+            for override in self.team_map["overrides"]:
+                if override["team"] != team_name:
+                    continue
+                if workspace_name and override.get("workspace") and \
+                        not matches_workspace_patterns(workspace_name, override["workspace"]):
+                    continue
+                roles = override["roles"]
+                break
         if roles is None:
             roles = self.team_map[levels_key].get(access)
 
-        scalr_team = self.team_map["teams"].get(team_name)
+        scalr_team = grant.get("scalr_team") or self.team_map["teams"].get(team_name)
+        if not scalr_team and not self.team_map["from_file"]:
+            # --team-access without --team-map: the file names Scalr teams directly.
+            scalr_team = team_name
         problem = None
         if not scalr_team:
             problem = f"TFC/E team '{team_name}' is not mapped to a Scalr team"
         elif not roles:
-            problem = f"access level '{access}' of TFC/E team '{team_name}' is not mapped to Scalr roles"
+            problem = f"access level '{access}' of team '{team_name}' is not mapped to Scalr roles"
 
         return {"tfc_team": team_name, "access": access, "team": scalr_team, "roles": roles or [],
                 "problem": problem}
 
     def resolve_team_access(self, tf_workspace: Dict) -> List[Dict]:
-        """The access policies the TFC team access of a workspace becomes (workspace scope)."""
-        planned = []
+        """The access policies the team access of a workspace becomes (workspace scope)."""
         workspace_name = tf_workspace["attributes"]["name"]
-        for item in self.tfc.get_team_workspaces(tf_workspace["id"]):
-            team_id = item["relationships"]["team"]["data"]["id"]
-            planned.append(self.plan_team_access(
-                self.get_tfc_team_name(team_id), item["attributes"]["access"], workspace_name, "access_levels"
-            ))
+        planned = [self.plan_team_access(grant, workspace_name, "access_levels")
+                   for grant in self.workspace_team_grants(tf_workspace)]
 
         project = ((tf_workspace.get("relationships") or {}).get("project") or {}).get("data")
         if self.team_map["project_access"] == "workspaces" and project:
-            for item in self.get_project_team_access(project["id"]):
-                team_id = item["relationships"]["team"]["data"]["id"]
-                planned.append(self.plan_team_access(
-                    self.get_tfc_team_name(team_id), item["attributes"]["access"], workspace_name,
-                    "project_access_levels"
-                ))
+            for grant in self.get_project_team_access(project["id"]):
+                planned.append(self.plan_team_access(grant, workspace_name, "project_access_levels"))
         return planned
 
     def find_scalr_team_id(self, name: str) -> Optional[str]:
+        """The id of a Scalr team given by name or by id. An id resolves to itself."""
         if name not in self.scalr_team_ids:
-            team = self.scalr.find_team(name)
+            team = self.scalr.get_team_by_id(name) if SCALR_TEAM_ID.match(name) else None
+            team = team or self.scalr.find_team(name)
             self.scalr_team_ids[name] = team["id"] if team else None
         return self.scalr_team_ids[name]
 
     def find_scalr_role_id(self, name: str) -> Optional[str]:
+        """The id of a Scalr role given by name or by id. An id resolves to itself."""
         if name not in self.scalr_role_ids:
-            role = self.scalr.find_role(name)
+            role = self.scalr.get_role_by_id(name) if SCALR_ROLE_ID.match(name) else None
+            role = role or self.scalr.find_role(name)
             self.scalr_role_ids[name] = role["id"] if role else None
         return self.scalr_role_ids[name]
 
@@ -2142,17 +2250,24 @@ class MigrationService:
         result.update({"action": "created", "id": policy_id})
         ConsoleOutput.success(f"Granted team '{planned['team']}' roles {', '.join(planned['roles'])}")
 
-        team_data = TerraformDataSource("scalr_iam_team", planned["team"], {"name": planned["team"]})
-        self.resource_manager.add_data_source(team_data)
+        # A team or role given by id stays a literal id; one given by name becomes a data source.
+        if team_id == planned["team"]:
+            team_reference = team_id
+        else:
+            team_data = TerraformDataSource("scalr_iam_team", planned["team"], {"name": planned["team"]})
+            self.resource_manager.add_data_source(team_data)
+            team_reference = self.resource_manager.get_resource("scalr_iam_team", planned["team"]) or team_data
         role_data = []
-        for role in planned["roles"]:
+        for role, role_id in zip(planned["roles"], role_ids):
+            if role_id == role:
+                role_data.append(role_id)
+                continue
             data_source = TerraformDataSource("scalr_role", role, {"name": role})
             self.resource_manager.add_data_source(data_source)
             role_data.append(self.resource_manager.get_resource("scalr_role", role) or data_source)
 
         policy_resource = TerraformResource("scalr_access_policy", resource_name, {
-            "subject": HCLObject({"type": "team", "id": self.resource_manager.get_resource(
-                "scalr_iam_team", planned["team"]) or team_data}),
+            "subject": HCLObject({"type": "team", "id": team_reference}),
             "scope": HCLObject({"type": scope_type[:-1], "id": scope_reference}),
             "role_ids": role_data,
         })
@@ -2183,7 +2298,7 @@ class MigrationService:
             return
         ConsoleOutput.section("Migrating project team access")
         try:
-            items = self.get_project_team_access(project_id)
+            grants = self.get_project_team_access(project_id)
         except errors.APIError as e:
             message = f"Unable to read the TFC/E team access of project '{self.args.tfc_project}': {e}"
             ConsoleOutput.warning(message)
@@ -2192,11 +2307,8 @@ class MigrationService:
 
         reference = self.get_environment_resource_id() or env["id"]
         entry = {"warnings": self.report.warnings, "access_policies": []}
-        for item in items:
-            team_id = item["relationships"]["team"]["data"]["id"]
-            planned = self.plan_team_access(
-                self.get_tfc_team_name(team_id), item["attributes"]["access"], None, "project_access_levels"
-            )
+        for grant in grants:
+            planned = self.plan_team_access(grant, None, "project_access_levels")
             self.ensure_access_policy(
                 planned, "environments", env["id"], reference,
                 f"{env['attributes']['name']}_{planned['team'] or planned['tfc_team']}", None, entry

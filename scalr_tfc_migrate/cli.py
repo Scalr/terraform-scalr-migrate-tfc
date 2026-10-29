@@ -75,12 +75,22 @@ def main():
                              'credentials only')
     parser.add_argument('--inventory-dir', type=str,
                         help=f'Directory for the --inventory files. Default: {constants.DEFAULT_INVENTORY_DIR}')
+    parser.add_argument('--inventory-format', type=str,
+                        choices=[constants.INVENTORY_FORMAT_CSV, constants.INVENTORY_FORMAT_TSV],
+                        help='Format of the --inventory tables: csv (default) or tsv')
     parser.add_argument('--dry-run', action='store_true',
                         help='Report what a migration with the same arguments would create, reuse or skip, and '
                              'what would block it, without changing anything in TFC/E or Scalr')
     parser.add_argument('--team-map', type=str,
                         help='JSON file mapping TFC/E teams and access levels to Scalr teams and roles. When set, '
                              'TFC/E team access is migrated to Scalr access policies')
+    parser.add_argument('--team-access', type=str,
+                        help='CSV or TSV file listing the team access to grant, with the columns of the '
+                             '--inventory team-access table. When set, it replaces the team access read from '
+                             'TFC/E, and team access is migrated to Scalr access policies')
+    parser.add_argument('--workspace-defaults', type=str,
+                        help='JSON file of Scalr workspace settings TFC/E does not have (type, ssh_key_id, '
+                             'auto_queue_runs, ...), applied to every workspace this run creates')
     parser.add_argument('--skip-run-triggers', action='store_true',
                         help='Do not migrate TFC/E run triggers between workspaces')
     parser.add_argument('--layout', type=str, choices=[constants.LAYOUT_SINGLE, constants.LAYOUT_PER_WORKSPACE],

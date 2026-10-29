@@ -83,7 +83,7 @@ class AbstractTerraformResource:
             attrs.append((" " * ident) + f'{key} = [')
             for v in value:
                 if isinstance(v, str):
-                    attrs.append(f'"{v}",')
+                    attrs.append((" " * (ident + 2)) + f'"{v}",')
                 elif isinstance(v, AbstractTerraformResource):
                     attrs.append((" " * (ident + 2)) + f'{v.get_address()},')
             attrs.append((" " * ident) + ']')

@@ -22,7 +22,8 @@ every outcome is machine-readable, and every run can be previewed and checked.
   merged across runs and environments. Runs use it to resolve workspaces migrated by earlier waves, and it is the input
   for repointing `terraform_remote_state` / `tfe_outputs` readers at Scalr.
 - `--inventory`: exports the workspaces in scope to `migration-inventory/` (`--inventory-dir`) — `workspaces.csv`,
-  `team-access.csv` (workspace and project grants with custom permissions), `state-consumers.csv`, `run-triggers.csv`,
+  `team-access.csv` (workspace and project grants with custom permissions), `state-consumers.csv` (producer and
+  consumer with their VCS repository and working directory, and the producer's sharing mode), `run-triggers.csv`,
   `inventory.json`, and a `team-map.example.json` listing every team and access level found. Needs TFC/E credentials
   only; variable values are not exported.
 - `--dry-run`: reports what a migration with the same arguments would create, reuse, recover, skip or leave pending,
@@ -33,6 +34,18 @@ every outcome is machine-readable, and every run can be previewed and checked.
   grants into environment policies (`environment`, with `--tfc-project`) or workspace policies (`workspaces`). Unmapped
   teams or levels, and teams or roles missing in Scalr, are reported and get no policy. A team that already has a
   policy on the workspace is left alone. Created policies are written to the generated code as `scalr_access_policy`.
+- `--team-access FILE`: the team access to grant comes from a CSV or TSV file with the columns of the inventory's
+  `team-access` table instead of from TFC/E, so the exported table can be reviewed, edited and passed back. Optional
+  `scalr_team` and `roles` columns take precedence over the team map; without `--team-map`, the file names Scalr teams
+  and roles directly.
+- Scalr roles and teams can be given by id (`role-...`, `team-...`) as well as by name, in the team map and in
+  `--team-access`; the generated code keeps the id instead of a data source.
+- `--workspace-defaults FILE`: Scalr workspace settings TFC/E has no counterpart for (`type`, `ssh_key_id`,
+  `auto_queue_runs`, `run_operation_timeout`, `force_latest_run`, `remote_backend`, `var_files`), with overrides by
+  workspace pattern, applied to every workspace a run creates, in Scalr and in the generated code. `--dry-run`
+  reports them and blocks on an SSH key that does not exist.
+- `--inventory-format tsv`: the inventory tables are written as TSV. Files read by the migrator are CSV or TSV by
+  extension.
 - Run triggers are migrated (`scalr_run_trigger`), in both directions: a trigger whose other end is not in Scalr yet is
   reported as pending and created by the run that migrates it. `--skip-run-triggers` disables it.
 - `--layout per-workspace`: the generated code puts each workspace with its variables, access policies and run triggers

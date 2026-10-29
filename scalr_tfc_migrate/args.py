@@ -43,8 +43,11 @@ class MigratorArgs:
     report_file: Optional[str] = None
     inventory: bool = False
     inventory_dir: str = constants.DEFAULT_INVENTORY_DIR
+    inventory_format: str = constants.INVENTORY_FORMAT_CSV
     dry_run: bool = False
     team_map_file: Optional[str] = None
+    team_access_file: Optional[str] = None
+    workspace_defaults_file: Optional[str] = None
     skip_run_triggers: bool = False
     layout: str = constants.LAYOUT_SINGLE
     verify: bool = False
@@ -89,8 +92,11 @@ class MigratorArgs:
             report_file=args.report_file,
             inventory=args.inventory,
             inventory_dir=args.inventory_dir or constants.DEFAULT_INVENTORY_DIR,
+            inventory_format=args.inventory_format or constants.INVENTORY_FORMAT_CSV,
             dry_run=args.dry_run,
             team_map_file=args.team_map,
+            team_access_file=args.team_access,
+            workspace_defaults_file=args.workspace_defaults,
             skip_run_triggers=args.skip_run_triggers,
             layout=args.layout or constants.LAYOUT_SINGLE,
             verify=args.verify or args.verify_plan,

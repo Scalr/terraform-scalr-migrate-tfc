@@ -1,5 +1,4 @@
-"""--inventory: export the TFC/E side of a migration as reviewable CSV and JSON files."""
-import csv
+"""--inventory: export the TFC/E side of a migration as reviewable CSV (or TSV) and JSON files."""
 import json
 import os
 from typing import Dict, List, Optional, Set, Tuple
@@ -10,6 +9,7 @@ from scalr_tfc_migrate.clients import TFCClient
 from scalr_tfc_migrate.console import ConsoleOutput
 from scalr_tfc_migrate.matching import matches_workspace_patterns
 from scalr_tfc_migrate.report import utc_now
+from scalr_tfc_migrate.tables import write_table
 
 # Variables that usually hold cloud credentials, which a Scalr provider configuration can hold instead.
 CREDENTIAL_PREFIXES = ("ARM_", "AWS_", "GOOGLE_", "TFC_AWS_", "TFC_AZURE_", "TFC_GCP_")
@@ -24,8 +24,16 @@ WORKSPACE_COLUMNS = [
     "sensitive_variables", "credential_variables", "variable_sets", "remote_state_consumers",
     "inbound_run_triggers",
 ]
-TEAM_ACCESS_COLUMNS = ["scope", "project", "workspace", "team", "team_id", "access", *TEAM_WORKSPACE_PERMISSIONS]
-STATE_CONSUMER_COLUMNS = ["producer", "producer_id", "consumer", "consumer_id"]
+# scalr_team and roles are left empty for a person to fill in, so the table can be passed back
+# with --team-access.
+TEAM_ACCESS_COLUMNS = ["scope", "project", "workspace", "team", "team_id", "access", "scalr_team", "roles",
+                       *TEAM_WORKSPACE_PERMISSIONS]
+# sharing_mode is `global` (any workspace of the organization may read the state; the consumers
+# are not known, so the row has none) or `explicit`. The repository and working directory of
+# both sides are what a change to the consumers' code needs to find it.
+STATE_CONSUMER_COLUMNS = ["producer", "producer_id", "producer_vcs_repo", "producer_working_directory",
+                          "sharing_mode", "consumer", "consumer_id", "consumer_vcs_repo",
+                          "consumer_working_directory"]
 RUN_TRIGGER_COLUMNS = ["upstream", "upstream_id", "downstream", "downstream_id"]
 
 
@@ -37,7 +45,7 @@ class InventoryExporter:
     """
     Reads the workspaces in scope and everything a migration plan depends on: team access,
     remote state consumers, run triggers, variables (keys only, never values) and variable sets.
-    The CSV files are the source of truth a team reviews and plans waves from; inventory.json
+    The tables are the source of truth a team reviews and plans waves from; inventory.json
     carries the same data for tools.
     """
 
@@ -90,12 +98,23 @@ class InventoryExporter:
                 team_access.append({"scope": "workspace", "project": project_name, "workspace": name, **access})
 
             consumers = self.tfc.get_remote_state_consumers(tf_workspace)
+            producer = {
+                "producer": name,
+                "producer_id": tf_workspace["id"],
+                "producer_vcs_repo": row["vcs_repo"],
+                "producer_working_directory": row["working_directory"],
+                "sharing_mode": "global" if row["global_remote_state"] else "explicit",
+            }
+            if row["global_remote_state"]:
+                state_consumers.append({**producer, "consumer": "", "consumer_id": ""})
             for consumer in consumers:
+                consumer_attributes = consumer.get("attributes") or {}
                 state_consumers.append({
-                    "producer": name,
-                    "producer_id": tf_workspace["id"],
-                    "consumer": (consumer.get("attributes") or {}).get("name", ""),
+                    **producer,
+                    "consumer": consumer_attributes.get("name", ""),
                     "consumer_id": consumer["id"],
+                    "consumer_vcs_repo": self._vcs_repo(consumer_attributes),
+                    "consumer_working_directory": consumer_attributes.get("working-directory") or "",
                 })
             row["remote_state_consumers"] = "*" if row["global_remote_state"] else len(consumers)
 
@@ -175,6 +194,10 @@ class InventoryExporter:
             )
         return self.agent_pool_names[agent_pool_id]
 
+    @staticmethod
+    def _vcs_repo(attributes: Dict) -> str:
+        return (attributes.get("vcs-repo") or {}).get("identifier") or attributes.get("vcs-repo-identifier") or ""
+
     def workspace_row(self, tf_workspace: Dict, last_run: Optional[Dict], project_name: str) -> Dict:
         attributes = tf_workspace["attributes"]
         vcs_repo = attributes.get("vcs-repo") or {}
@@ -201,7 +224,7 @@ class InventoryExporter:
             "name": attributes["name"],
             "id": tf_workspace["id"],
             "project": project_name,
-            "vcs_repo": vcs_repo.get("identifier") or attributes.get("vcs-repo-identifier") or "",
+            "vcs_repo": self._vcs_repo(attributes),
             "vcs_branch": vcs_repo.get("branch") or "",
             "working_directory": attributes.get("working-directory") or "",
             "terraform_version": attributes.get("terraform-version") or "",
@@ -242,7 +265,7 @@ class InventoryExporter:
         except errors.APIError as e:
             # The token needs permission to manage team access; one warning is enough.
             self.team_access_readable = False
-            self.warn(f"Unable to read TFC/E team access, team-access.csv will be incomplete: {e}")
+            self.warn(f"Unable to read TFC/E team access, the team-access table will be incomplete: {e}")
             return []
         return [self._team_access_entry(item, TEAM_WORKSPACE_PERMISSIONS) for item in items]
 
@@ -255,13 +278,6 @@ class InventoryExporter:
             self.warn(f"Unable to read the team access of project '{project_id}': {e}")
             return []
         return [self._team_access_entry(item, ()) for item in items]
-
-    @staticmethod
-    def _write_csv(path: str, columns: List[str], rows: List[Dict]) -> None:
-        with open(path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
-            writer.writeheader()
-            writer.writerows(rows)
 
     def team_map_example(self, team_access: List[Dict]) -> Dict:
         """A --team-map skeleton listing every team and access level found, for a person to fill in."""
@@ -283,10 +299,14 @@ class InventoryExporter:
         directory = self.args.inventory_dir
         os.makedirs(directory, exist_ok=True)
 
-        self._write_csv(os.path.join(directory, "workspaces.csv"), WORKSPACE_COLUMNS, workspaces)
-        self._write_csv(os.path.join(directory, "team-access.csv"), TEAM_ACCESS_COLUMNS, team_access)
-        self._write_csv(os.path.join(directory, "state-consumers.csv"), STATE_CONSUMER_COLUMNS, state_consumers)
-        self._write_csv(os.path.join(directory, "run-triggers.csv"), RUN_TRIGGER_COLUMNS, run_triggers)
+        extension = self.args.inventory_format
+        for name, columns, rows in (
+                ("workspaces", WORKSPACE_COLUMNS, workspaces),
+                ("team-access", TEAM_ACCESS_COLUMNS, team_access),
+                ("state-consumers", STATE_CONSUMER_COLUMNS, state_consumers),
+                ("run-triggers", RUN_TRIGGER_COLUMNS, run_triggers),
+        ):
+            write_table(os.path.join(directory, f"{name}.{extension}"), columns, rows)
 
         with open(os.path.join(directory, "team-map.example.json"), "w") as f:
             json.dump(self.team_map_example(team_access), f, indent=2)
@@ -307,6 +327,7 @@ class InventoryExporter:
         ConsoleOutput.section("Inventory Summary")
         ConsoleOutput.success(
             f"{len(workspaces)} workspace(s), {len(team_access)} team access grant(s), "
-            f"{len(state_consumers)} remote state consumer link(s), {len(run_triggers)} run trigger(s)"
+            f"{sum(1 for row in state_consumers if row['consumer_id'])} remote state consumer link(s), "
+            f"{len(run_triggers)} run trigger(s)"
         )
         ConsoleOutput.info(f"Inventory written to {directory}/")

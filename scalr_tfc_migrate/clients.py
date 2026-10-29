@@ -745,6 +745,28 @@ class ScalrClient(APIClient):
         roles = self.get("roles", {"filter[name]": name})["data"]
         return next((role for role in roles if role["attributes"]["name"] == name), None)
 
+    def _get_by_id(self, route: str) -> Optional[Dict]:
+        try:
+            return self.get(route)["data"]
+        except errors.APIError as e:
+            if e.code != 404:
+                raise e
+
+    def get_team_by_id(self, team_id: str) -> Optional[Dict]:
+        return self._get_by_id(f"teams/{team_id}")
+
+    def get_role_by_id(self, role_id: str) -> Optional[Dict]:
+        return self._get_by_id(f"roles/{role_id}")
+
+    def get_ssh_key(self, ssh_key_id: str) -> Optional[Dict]:
+        return self._get_by_id(f"ssh-keys/{ssh_key_id}")
+
+    def link_ssh_key(self, workspace_id: str, ssh_key_id: str) -> Dict:
+        # Not a JSON:API document: the endpoint takes a plain object.
+        url = f"https://{self.hostname}{self.api_version}workspaces/{workspace_id}/ssh-key-links"
+        headers = {**self.headers, "Content-Type": "application/json"}
+        return self.make_request(url, method="POST", data={"ssh-key": ssh_key_id}, headers=headers)
+
     def list_access_policies(self, filters: Dict) -> List[Dict]:
         return self.get("access-policies", {**filters, "page[size]": 100})["data"]
 
